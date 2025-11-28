@@ -378,7 +378,7 @@ with st.sidebar:
     # 设置区
     targets_input = st.text_area(
         "2. 输入公众号名称", 
-        placeholder="支持逗号、空格或换行分隔\n例如：\n清华大学\n北京大学, 复旦大学",
+        placeholder="支持中文逗号、顿号、空格或换行分隔\n例如：\n清华大学、北京大学，复旦大学",
         height=150
     )
     
@@ -395,8 +395,8 @@ if run_btn:
         st.error("请输入至少一个公众号！")
         st.stop()
         
-    # 智能分割输入：支持逗号、空格、换行
-    target_list = re.split(r'[,\s\n]+', targets_input.strip())
+    # 智能分割输入：支持中文逗号、顿号、英文逗号、空格、换行
+    target_list = re.split(r'[,\s\n，、]+', targets_input.strip())
     target_list = [t for t in target_list if t] # 去空
     
     crawler = WechatCrawler(token_input, cookie_input)
