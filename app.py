@@ -74,7 +74,7 @@ selection = st.sidebar.radio(
 # --- 🏠 首页 (Landing Page) ---
 if selection == PAGES["home"]:
     # 居中大字标题
-    st.markdown('<div class="main-title">汉开教育 校办工具箱</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title">漢開教育 校办工具箱</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">HKA Administrative Toolkit</div>', unsafe_allow_html=True)
 
     # 横排三个模块入口
