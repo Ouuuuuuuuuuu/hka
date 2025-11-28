@@ -169,28 +169,41 @@ def auto_login_get_cookie(browser_type="Chrome"):
         
         # 根据选择初始化不同的浏览器驱动
         if browser_type == "Chrome":
-            options = webdriver.ChromeOptions()
-            service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
+            try:
+                options = webdriver.ChromeOptions()
+                service = ChromeService(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=options)
+            except Exception as e:
+                st.error("无法下载 Chrome 驱动，请检查网络（可能需要VPN）。推荐使用下方的【方法二：手动复制】。")
+                return None, None
             
         elif browser_type == "Edge":
-            options = webdriver.EdgeOptions()
-            service = EdgeService(EdgeChromiumDriverManager().install())
-            driver = webdriver.Edge(service=service, options=options)
+            try:
+                options = webdriver.EdgeOptions()
+                service = EdgeService(EdgeChromiumDriverManager().install())
+                driver = webdriver.Edge(service=service, options=options)
+            except Exception as e:
+                st.error("无法下载 Edge 驱动，请检查网络（可能需要VPN）。推荐使用下方的【方法二：手动复制】。")
+                return None, None
             
         elif browser_type == "Firefox":
-            options = webdriver.FirefoxOptions()
-            service = FirefoxService(GeckoDriverManager().install())
-            driver = webdriver.Firefox(service=service, options=options)
+            try:
+                options = webdriver.FirefoxOptions()
+                service = FirefoxService(GeckoDriverManager().install())
+                driver = webdriver.Firefox(service=service, options=options)
+            except Exception as e:
+                st.error("无法下载 Firefox 驱动。推荐使用下方的【方法二：手动复制】。")
+                return None, None
             
         elif browser_type == "Safari":
-            if platform.system() != 'Darwin':
-                st.error("Safari 浏览器仅支持 macOS 系统。")
-                return None, None
-            # Safari 不需要下载驱动，是系统内置的
+            # 移除严格的系统检测，因为某些环境可能误报
             # 注意：需在 Safari 菜单 -> 开发 -> 允许远程自动化 (Allow Remote Automation)
             options = webdriver.SafariOptions()
-            driver = webdriver.Safari(options=options)
+            try:
+                driver = webdriver.Safari(options=options)
+            except Exception as e:
+                st.error("启动 Safari 失败。请确认：1.使用macOS 2.Safari菜单栏【开发】->勾选【允许远程自动化】。")
+                return None, None
             
         # 打开微信公众平台
         driver.get("https://mp.weixin.qq.com/")
@@ -233,12 +246,7 @@ def auto_login_get_cookie(browser_type="Chrome"):
         return token, cookies_str
         
     except Exception as e:
-        error_msg = str(e)
-        if browser_type == "Safari" and "Could not create a session" in error_msg:
-             st.error("启动 Safari 失败。请确保已在 Safari 菜单栏中开启 '开发' -> '允许远程自动化'。")
-        else:
-             st.error(f"启动 {browser_type} 浏览器失败: {error_msg}")
-        
+        st.error(f"自动化启动失败: {str(e)}")
         if driver:
             try:
                 driver.quit()
@@ -256,22 +264,37 @@ if 'wx_cookie' not in st.session_state:
 with st.sidebar:
     st.title("🤖 自动获取助手")
     
-    # 浏览器选择
-    browser_choice = st.selectbox(
-        "选择浏览器", 
-        ["Chrome", "Edge", "Safari", "Firefox"],
-        help="Safari 需在菜单栏开启'允许远程自动化'；其他浏览器第一次运行时会自动下载驱动。"
-    )
+    tab_auto, tab_manual = st.tabs(["⚡️ 方法一：自动唤起", "🛠️ 方法二：手动复制"])
     
-    # 自动获取按钮
-    if st.button("📢 唤起浏览器扫码", type="primary"):
-        token, cookie = auto_login_get_cookie(browser_choice)
-        if token and cookie:
-            st.session_state['wx_token'] = token
-            st.session_state['wx_cookie'] = cookie
-            st.success("凭证已自动填入！")
-            time.sleep(1)
-            st.rerun()
+    with tab_auto:
+        # 浏览器选择
+        browser_choice = st.selectbox(
+            "选择浏览器", 
+            ["Edge", "Safari", "Chrome", "Firefox"],
+            help="Safari 需在菜单栏开启'允许远程自动化'；其他浏览器第一次运行时会自动下载驱动。"
+        )
+        
+        st.markdown("💡 **温馨提示**：第一次用？[下载Edge驱动](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/?form=MA13LH#downloads)")
+        
+        # 自动获取按钮
+        if st.button("📢 唤起浏览器扫码", type="primary"):
+            token, cookie = auto_login_get_cookie(browser_choice)
+            if token and cookie:
+                st.session_state['wx_token'] = token
+                st.session_state['wx_cookie'] = cookie
+                st.success("凭证已自动填入！")
+                time.sleep(1)
+                st.rerun()
+
+    with tab_manual:
+        st.markdown("""
+        **如果自动唤起失败（通常是网络原因），请尝试此法：**
+        1. 在你自己常用的浏览器打开 [微信后台](https://mp.weixin.qq.com)。
+        2. 登录后，按 `F12` 打开控制台 (Console)。
+        3. **复制并运行**下方代码：
+        """)
+        st.code("copy('Token: ' + new URLSearchParams(location.search).get('token') + '\\nCookie: ' + document.cookie)", language="javascript")
+        st.caption("运行后，Token和Cookie会自动复制到你的剪贴板，直接粘贴到下方即可。")
     
     st.divider()
     
