@@ -6,5 +6,4 @@ jieba
 openpyxl
 beautifulsoup4
 lxml
-selenium
-webdriver_manager
+playwright
