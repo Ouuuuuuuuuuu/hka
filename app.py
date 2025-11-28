@@ -80,25 +80,21 @@ if selection == PAGES["home"]:
     # 横排三个模块入口
     col1, col2, col3 = st.columns(3)
 
-    # 定义跳转函数
+    # 定义跳转回调函数
     def switch_page(page_name):
         st.session_state.current_page = page_name
-        st.rerun()
 
     with col1:
         st.info("📊 **师资效能评估**\n\nDeepSeek 驱动的师资结构诊断与模拟沙盘。")
-        if st.button("进入评估系统", use_container_width=True):
-            switch_page(PAGES["eval"])
+        st.button("进入评估系统", use_container_width=True, on_click=switch_page, args=(PAGES["eval"],))
 
     with col2:
         st.success("📝 **文章库生成器**\n\nWord 批量转网页工具，纯前端处理，安全高效。")
-        if st.button("打开生成工具", use_container_width=True):
-            switch_page(PAGES["article"])
+        st.button("打开生成工具", use_container_width=True, on_click=switch_page, args=(PAGES["article"],))
 
     with col3:
         st.warning("🔥 **公众号热点分析**\n\n基于 Python 的公众号数据可视化与词云分析。")
-        if st.button("开始热点分析", use_container_width=True):
-            switch_page(PAGES["hotspot"])
+        st.button("开始热点分析", use_container_width=True, on_click=switch_page, args=(PAGES["hotspot"],))
 
     # 首页底部的额外装饰或说明
     st.markdown("---")
