@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 import os
 
 # 1. 设置页面基本配置 (必须是第一个 Streamlit 命令)
-st.set_page_config(layout="wide", page_title="HKA 綜合工具箱")
+st.set_page_config(layout="wide", page_title="HKA 综合工具箱")
 
 # 2. 自定义 CSS 样式：美化标题、卡片和底部 Footer
 st.markdown("""
