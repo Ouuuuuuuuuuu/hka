@@ -141,6 +141,23 @@ def process_data(articles, crawler=None, fetch_details=False):
         df['author'] = "未采集"
     return df
 
+# --- 辅助函数：强力安装浏览器内核 ---
+def force_install_playwright():
+    """
+    针对 Streamlit 环境的强制安装脚本
+    """
+    try:
+        # 使用当前运行 Streamlit 的 Python 解释器去安装，确保环境一致
+        # 加上 --with-deps 可能需要管理员权限，这里只装 chromium 足够了
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        process = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if process.returncode != 0:
+            return False, process.stderr
+        return True, "安装成功"
+    except Exception as e:
+        return False, str(e)
+
 # --- 核心：Playwright 自动登录逻辑 ---
 def auto_login_playwright():
     """
@@ -151,25 +168,29 @@ def auto_login_playwright():
     token = None
     cookie_string = None
     
+    status_placeholder.info("🚀 正在启动浏览器引擎...")
+    
     try:
-        status_placeholder.info("🚀 正在启动浏览器...")
-        
         with sync_playwright() as p:
-            # 1. 尝试启动浏览器，如果报错则尝试自动安装
+            # 1. 尝试启动浏览器
             try:
                 browser = p.chromium.launch(headless=False)
             except Exception as e:
+                # 捕获浏览器缺失错误，进行自动修复
                 error_msg = str(e)
-                if "Executable doesn't exist" in error_msg or "playwright install" in error_msg:
-                    status_placeholder.warning("⚙️ 检测到初次运行，正在自动安装浏览器内核... (请勿关闭，约需1-2分钟)")
-                    try:
-                        # 自动执行安装命令
-                        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-                        status_placeholder.success("✅ 内核安装完成！正在重试启动...")
-                        # 安装完成后重试启动
+                if "Executable doesn't exist" in error_msg:
+                    status_placeholder.warning("⚙️ 检测到浏览器内核缺失，正在自动下载 (约需 1-2 分钟)...")
+                    
+                    # 执行自动安装
+                    success, msg = force_install_playwright()
+                    
+                    if success:
+                        status_placeholder.success("✅ 内核安装完成！正在启动...")
+                        # 再次尝试启动
                         browser = p.chromium.launch(headless=False)
-                    except Exception as install_error:
-                        status_placeholder.error(f"❌ 自动安装失败，请手动运行终端命令: playwright install")
+                    else:
+                        status_placeholder.error(f"❌ 自动安装失败: {msg}")
+                        st.error(f"请尝试在终端手动运行此命令: {sys.executable} -m playwright install chromium")
                         return None, None
                 else:
                     raise e
@@ -186,11 +207,19 @@ def auto_login_playwright():
             max_retries = 120  # 等待 120 秒
             for i in range(max_retries):
                 # 检查浏览器是否被手动关闭
-                if page.is_closed():
+                if not page.context.pages: # 简单的检查方式
                     status_placeholder.error("浏览器已关闭，操作取消。")
                     return None, None
-                    
-                current_url = page.url
+                
+                try:
+                    if page.is_closed():
+                         status_placeholder.error("浏览器已关闭，操作取消。")
+                         return None, None
+                    current_url = page.url
+                except:
+                    status_placeholder.error("浏览器连接断开。")
+                    return None, None
+
                 if "token=" in current_url:
                     status_placeholder.success(f"✅ 登录成功！正在提取凭证... ({i}s)")
                     
