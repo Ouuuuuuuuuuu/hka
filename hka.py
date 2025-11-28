@@ -165,23 +165,20 @@ def force_install_chromium():
 
 def auto_login_browser():
     """
-    云端适配版：无头模式 + 截图扫码
+    云端适配版 v2.0：高清截图 + 精准裁剪
     """
-    status_box = st.empty() # 用于显示状态文字
-    qr_box = st.empty()     # 专门用于显示二维码截图
+    status_box = st.empty()
+    qr_box = st.empty()
     token = None
     cookie_str = None
 
-    status_box.info("🚀 正在启动自动化引擎 (云端模式)...")
+    status_box.info("🚀 正在启动自动化引擎 (高清云端模式)...")
 
     try:
         with sync_playwright() as p:
-            # 1. 启动浏览器 (必须使用 headless=True)
             try:
-                # --- 关键修改：headless=True 表示不显示窗口 ---
                 browser = p.chromium.launch(headless=True)
             except Exception as e:
-                # 如果缺少内核，尝试自动安装
                 if "Executable doesn't exist" in str(e):
                     status_box.warning("⚙️ 正在安装浏览器内核...")
                     if force_install_chromium():
@@ -192,23 +189,23 @@ def auto_login_browser():
                 else:
                     raise e
 
-            context = browser.new_context()
+            # --- 优化点 1：设置高清分辨率，防止渲染模糊 ---
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
             page = context.new_page()
 
-            # 2. 打开网页
             status_box.info("🔗 正在加载微信登录页...")
             page.goto("https://mp.weixin.qq.com/")
             
-            # 等待二维码元素加载出来 (微信的二维码容器类名通常是 .login__type__container__scan)
+            # 等待二维码区域加载 (最多等15秒)
             try:
+                # 微信登录框的特定 CSS 类名
                 page.wait_for_selector(".login__type__container__scan", timeout=15000)
             except:
-                pass # 即使超时也尝试截图看看
+                pass 
 
-            # --- 关键修改：在网页上显示截图供用户扫码 ---
-            status_box.warning("📱 请使用手机微信，扫描下方二维码登录：")
+            status_box.warning("📱 请使用手机微信扫码 (二维码已放大):")
             
-            # 3. 循环监测登录状态
+            # 3. 循环监测
             max_wait = 120
             for i in range(max_wait):
                 try:
@@ -216,14 +213,27 @@ def auto_login_browser():
                     current_url = page.url
                 except: return None, None
 
-                # 每隔 2 秒刷新一次截图（防止二维码过期或未加载）
-                if i % 2 == 0 and "token=" not in current_url:
-                    # 截图并显示在 Streamlit 页面上
-                    screenshot_bytes = page.screenshot()
-                    qr_box.image(screenshot_bytes, caption="请扫描此二维码 (实时画面)", width=300)
+                # 每 1.5 秒刷新一次截图
+                if i % 1.5 == 0 and "token=" not in current_url:
+                    try:
+                        # --- 优化点 2：只截取二维码区域，而不是全屏 ---
+                        # 定位到二维码的容器
+                        qr_elem = page.locator(".login__type__container__scan")
+                        if qr_elem.count() > 0:
+                            # 只截这个元素
+                            screenshot_bytes = qr_elem.screenshot()
+                            # 放大显示宽度
+                            qr_box.image(screenshot_bytes, caption="📸 请扫码 (实时画面)", width=400)
+                        else:
+                            # 如果找不到元素，退回到截全屏，但因为分辨率高了也会清晰
+                            screenshot_bytes = page.screenshot()
+                            qr_box.image(screenshot_bytes, caption="📸 请扫码 (全屏备用)", width=600)
+                    except Exception as e:
+                        # 截图偶尔失败不影响主流程
+                        pass
 
                 if "token=" in current_url:
-                    qr_box.empty() # 登录成功，清除二维码
+                    qr_box.empty() # 清除二维码
                     status_box.success(f"✅ 登录成功！正在提取密钥... ({i}s)")
                     
                     parsed = urlparse(current_url)
