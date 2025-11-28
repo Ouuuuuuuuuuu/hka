@@ -20,7 +20,7 @@ import base64
 
 # --- 页面基础配置 ---
 st.set_page_config(
-    page_title="公众号舆情分析系统",
+    page_title="公众号热点分析系统",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -234,10 +234,10 @@ def call_ai_analysis(data_payload, mode="global"):
     if mode == "global":
         system_prompt = """你是一位资深的教育行业新媒体数据分析专家。
 用户将提供一份JSON格式的汇总数据，包含多个公众号在近期的发文统计、标题列表及提取的高频热词。
-请撰写一份【深度舆情对比分析报告】。
+请撰写一份【深度热点对比分析报告】。
 
 报告核心维度：
-1. **核心议题概览**：分析各公众号近期关注的重点话题。
+1. **核心议题概览**：分析各公众号近期关注的重点热点话题。
 2. **活跃度与策略对比**：对比各账号的发文频率和运营活跃度。
 3. **内容风格洞察**：分析各账号的行文风格（如标题党、学术严谨、亲民等）。
 4. **总结与建议**：给出优化建议。
@@ -509,7 +509,7 @@ if 'wx_cookie' not in st.session_state: st.session_state['wx_cookie'] = ''
 if 'all_data' not in st.session_state: st.session_state['all_data'] = None
 
 with st.sidebar:
-    st.title("🎓 公众号舆情分析 Pro")
+    st.title("🎓 公众号热点分析 Pro")
     st.caption("Playwright · 词云 · Kimi深度思考")
     st.markdown("---")
     
@@ -609,10 +609,10 @@ if st.session_state['all_data'] is not None:
     df = st.session_state['all_data']
     
     st.divider()
-    st.title("📊 公众号新媒体大数据看板")
+    st.title("📊 公众号新媒体热点看板")
     
     # 4个 Tab
-    tab_global_1, tab_global_2, tab_global_3, tab_ai = st.tabs(["☁️ 综合词云", "🏆 影响力排行", "📈 发文趋势", "🤖 全网 AI 报告"])
+    tab_global_1, tab_global_2, tab_global_3, tab_ai = st.tabs(["☁️ 综合词云", "🏆 影响力排行", "📈 发文趋势", "🤖 全网 AI 热点报告"])
     
     # 全网智能屏蔽词
     all_accounts = df['account_name'].unique()
@@ -713,7 +713,7 @@ if st.session_state['all_data'] is not None:
 
     # --- 全网 AI 分析 ---
     with tab_ai:
-        st.subheader("🤖 Kimi-K2-Thinking 深度舆情报告 (全网版)")
+        st.subheader("🤖 Kimi-K2-Thinking 深度热点报告 (全网版)")
         st.info("AI 将对比分析所有抓取的公众号数据。")
         
         if st.button("🧠 开始全网 AI 分析", type="primary", key="btn_global_ai"):
@@ -722,16 +722,19 @@ if st.session_state['all_data'] is not None:
                 success, report, reasoning = call_ai_analysis(ai_data, mode="global")
             
             if success:
-                # 思考过程可视化
-                if reasoning:
-                    with st.chat_message("assistant", avatar="🧠"):
-                        st.markdown("**AI 思考过程 (Reasoning):**")
-                        st.caption(reasoning)
-                    st.divider()
-                
-                # 最终报告
-                st.markdown(report)
                 st.success("分析完成！")
+                
+                # --- 新增：分栏展示思考过程与报告 ---
+                res_tab1, res_tab2 = st.tabs(["📝 分析报告", "🧠 思考过程"])
+                
+                with res_tab1:
+                    st.markdown(report)
+                
+                with res_tab2:
+                    if reasoning:
+                        st.markdown(reasoning)
+                    else:
+                        st.info("模型未返回思考过程")
             else:
                 st.error(report)
 
@@ -824,12 +827,19 @@ if st.session_state['all_data'] is not None:
                     success, report, reasoning = call_ai_analysis(single_ai_data, mode="single")
                 
                 if success:
-                    if reasoning:
-                        with st.chat_message("assistant", avatar="🧠"):
-                            st.markdown("**AI 思考过程:**")
-                            st.caption(reasoning)
-                        st.divider()
-                    st.markdown(report)
+                    st.success("诊断完成！")
+                    
+                    # --- 新增：分栏展示思考过程与报告 ---
+                    single_res_tab1, single_res_tab2 = st.tabs(["📝 诊断报告", "🧠 思考过程"])
+                    
+                    with single_res_tab1:
+                        st.markdown(report)
+                    
+                    with single_res_tab2:
+                        if reasoning:
+                            st.markdown(reasoning)
+                        else:
+                            st.info("模型未返回思考过程")
                 else:
                     st.error(report)
 
