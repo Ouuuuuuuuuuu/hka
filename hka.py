@@ -164,22 +164,29 @@ def force_install_chromium():
         return False
 
 def auto_login_browser():
-    status_box = st.empty()
+    """
+    云端适配版：无头模式 + 截图扫码
+    """
+    status_box = st.empty() # 用于显示状态文字
+    qr_box = st.empty()     # 专门用于显示二维码截图
     token = None
     cookie_str = None
 
-    status_box.info("🚀 正在启动自动化引擎，请稍候...")
+    status_box.info("🚀 正在启动自动化引擎 (云端模式)...")
 
     try:
         with sync_playwright() as p:
+            # 1. 启动浏览器 (必须使用 headless=True)
             try:
-                browser = p.chromium.launch(headless=False)
+                # --- 关键修改：headless=True 表示不显示窗口 ---
+                browser = p.chromium.launch(headless=True)
             except Exception as e:
+                # 如果缺少内核，尝试自动安装
                 if "Executable doesn't exist" in str(e):
-                    status_box.warning("⚙️ 首次运行，正在自动安装浏览器内核...")
+                    status_box.warning("⚙️ 正在安装浏览器内核...")
                     if force_install_chromium():
-                         status_box.success("✅ 安装成功！")
-                         browser = p.chromium.launch(headless=False)
+                         status_box.success("✅ 安装成功！重试中...")
+                         browser = p.chromium.launch(headless=True)
                     else:
                          return None, None
                 else:
@@ -188,11 +195,20 @@ def auto_login_browser():
             context = browser.new_context()
             page = context.new_page()
 
-            status_box.info("🔗 正在打开微信公众平台...")
+            # 2. 打开网页
+            status_box.info("🔗 正在加载微信登录页...")
             page.goto("https://mp.weixin.qq.com/")
-
-            status_box.warning("📱 请看浏览器窗口 -> 用微信扫码登录")
             
+            # 等待二维码元素加载出来 (微信的二维码容器类名通常是 .login__type__container__scan)
+            try:
+                page.wait_for_selector(".login__type__container__scan", timeout=15000)
+            except:
+                pass # 即使超时也尝试截图看看
+
+            # --- 关键修改：在网页上显示截图供用户扫码 ---
+            status_box.warning("📱 请使用手机微信，扫描下方二维码登录：")
+            
+            # 3. 循环监测登录状态
             max_wait = 120
             for i in range(max_wait):
                 try:
@@ -200,8 +216,16 @@ def auto_login_browser():
                     current_url = page.url
                 except: return None, None
 
+                # 每隔 2 秒刷新一次截图（防止二维码过期或未加载）
+                if i % 2 == 0 and "token=" not in current_url:
+                    # 截图并显示在 Streamlit 页面上
+                    screenshot_bytes = page.screenshot()
+                    qr_box.image(screenshot_bytes, caption="请扫描此二维码 (实时画面)", width=300)
+
                 if "token=" in current_url:
+                    qr_box.empty() # 登录成功，清除二维码
                     status_box.success(f"✅ 登录成功！正在提取密钥... ({i}s)")
+                    
                     parsed = urlparse(current_url)
                     token = parse_qs(parsed.query).get("token", [""])[0]
                     cookies = context.cookies()
@@ -214,7 +238,7 @@ def auto_login_browser():
             browser.close()
             
     except Exception as e:
-        status_box.error(f"❌ 启动失败: {e}")
+        status_box.error(f"❌ 运行错误: {e}")
         return None, None
 
     return token, cookie_str
