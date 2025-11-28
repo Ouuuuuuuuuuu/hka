@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 import os
 
 # 1. 设置页面基本配置 (必须是第一个 Streamlit 命令)
-st.set_page_config(layout="wide", page_title="HKA 综合工具箱")
+st.set_page_config(layout="wide", page_title="HKA 綜合工具箱")
 
 # 2. 自定义 CSS 样式：美化标题、卡片和底部 Footer
 st.markdown("""
@@ -38,6 +38,13 @@ st.markdown("""
         border-top: 1px solid #e2e8f0;
         z-index: 999;
     }
+    /* 强制信息块固定高度，解决按钮不对齐问题 */
+    .fixed-height-box {
+        min-height: 120px; /* 设定一个足够容纳所有文本的固定高度 */
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+    }
     /* 调整按钮样式使其更像卡片 (可选，Streamlit 原生按钮较难完全定制，这里主要靠布局) */
     div.stButton > button {
         width: 100%;
@@ -48,9 +55,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 3. 状态管理：确保 session_state 中有当前页面的记录
+# 3. 状态管理：确保 session_state 中有当前页面的记录和待跳转页面的记录
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "🏠 首页"
+if 'pending_page' not in st.session_state:
+    st.session_state.pending_page = None
 
 # 定义页面列表
 PAGES = {
@@ -60,9 +69,15 @@ PAGES = {
     "hotspot": "🔥 公众号热点分析"
 }
 
+# 解决状态冲突的核心逻辑：
+# 如果 pending_page 有值，说明用户点击了首页按钮，我们用它的值覆盖 current_page，然后清空 pending_page
+if st.session_state.pending_page:
+    st.session_state.current_page = st.session_state.pending_page
+    st.session_state.pending_page = None # 清空，避免无限循环
+
 # 4. 侧边栏导航
-st.sidebar.title("HKA 工具箱")
-# 使用 session_state 来同步选择状态
+st.sidebar.title("漢開工具箱") # 漢開
+# 使用 session_state.current_page 来同步选择状态
 selection = st.sidebar.radio(
     "功能导航:",
     list(PAGES.values()),
@@ -74,26 +89,35 @@ selection = st.sidebar.radio(
 # --- 🏠 首页 (Landing Page) ---
 if selection == PAGES["home"]:
     # 居中大字标题
-    st.markdown('<div class="main-title">漢開教育 校办工具箱</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title">漢開教育 校办工具箱</div>', unsafe_allow_html=True) # 漢開
     st.markdown('<div class="sub-title">HKA Administrative Toolkit</div>', unsafe_allow_html=True)
 
     # 横排三个模块入口
     col1, col2, col3 = st.columns(3)
 
-    # 定义跳转回调函数
+    # 定义跳转回调函数：现在它修改的是 pending_page
     def switch_page(page_name):
-        st.session_state.current_page = page_name
+        st.session_state.pending_page = page_name
 
     with col1:
+        # 修复对齐：将 st.info 放在固定高度的容器内
+        st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
         st.info("📊 **师资效能评估**\n\nDeepSeek 驱动的师资结构诊断与模拟沙盘。")
+        st.markdown('</div>', unsafe_allow_html=True)
         st.button("进入评估系统", use_container_width=True, on_click=switch_page, args=(PAGES["eval"],))
 
     with col2:
+        # 修复对齐：将 st.success 放在固定高度的容器内
+        st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
         st.success("📝 **文章库生成器**\n\nWord 批量转网页工具，纯前端处理，安全高效。")
+        st.markdown('</div>', unsafe_allow_html=True)
         st.button("打开生成工具", use_container_width=True, on_click=switch_page, args=(PAGES["article"],))
 
     with col3:
+        # 修复对齐：将 st.warning 放在固定高度的容器内
+        st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
         st.warning("🔥 **公众号热点分析**\n\n基于 Python 的公众号数据可视化与词云分析。")
+        st.markdown('</div>', unsafe_allow_html=True)
         st.button("开始热点分析", use_container_width=True, on_click=switch_page, args=(PAGES["hotspot"],))
 
     # 首页底部的额外装饰或说明
