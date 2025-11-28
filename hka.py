@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 import os
 from urllib.parse import urlparse, parse_qs
 import shutil
+import subprocess
+import sys
 
 # --- 新增：Playwright 库 ---
 from playwright.sync_api import sync_playwright
@@ -143,17 +145,35 @@ def process_data(articles, crawler=None, fetch_details=False):
 def auto_login_playwright():
     """
     使用 Playwright 启动浏览器并监听登录状态
+    包含自动安装内核的容错逻辑
     """
     status_placeholder = st.empty()
     token = None
     cookie_string = None
     
     try:
-        status_placeholder.info("🚀 正在启动 Chromium 浏览器...")
+        status_placeholder.info("🚀 正在启动浏览器...")
         
         with sync_playwright() as p:
-            # 1. 启动浏览器 (headless=False 以便看到界面扫码)
-            browser = p.chromium.launch(headless=False)
+            # 1. 尝试启动浏览器，如果报错则尝试自动安装
+            try:
+                browser = p.chromium.launch(headless=False)
+            except Exception as e:
+                error_msg = str(e)
+                if "Executable doesn't exist" in error_msg or "playwright install" in error_msg:
+                    status_placeholder.warning("⚙️ 检测到初次运行，正在自动安装浏览器内核... (请勿关闭，约需1-2分钟)")
+                    try:
+                        # 自动执行安装命令
+                        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+                        status_placeholder.success("✅ 内核安装完成！正在重试启动...")
+                        # 安装完成后重试启动
+                        browser = p.chromium.launch(headless=False)
+                    except Exception as install_error:
+                        status_placeholder.error(f"❌ 自动安装失败，请手动运行终端命令: playwright install")
+                        return None, None
+                else:
+                    raise e
+
             context = browser.new_context()
             page = context.new_page()
 
@@ -195,8 +215,7 @@ def auto_login_playwright():
             browser.close()
             
     except Exception as e:
-        status_placeholder.error(f"Playwright 启动失败: {str(e)}")
-        st.markdown("💡 **提示**: 第一次使用请确保已运行命令安装浏览器内核:\n`playwright install`")
+        status_placeholder.error(f"启动失败: {str(e)}")
         return None, None
         
     return token, cookie_string
