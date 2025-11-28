@@ -141,15 +141,21 @@ def process_data(articles, crawler=None, fetch_details=False):
         df['author'] = "未采集"
     return df
 
-# --- 辅助函数：强力安装浏览器内核 ---
-def force_install_playwright():
+# --- 辅助函数：强力安装浏览器内核及依赖 ---
+def force_install_playwright(install_deps=False):
     """
     针对 Streamlit 环境的强制安装脚本
+    install_deps=True 时会尝试安装系统级依赖 (需要 sudo 权限)
     """
     try:
         # 使用当前运行 Streamlit 的 Python 解释器去安装，确保环境一致
-        # 加上 --with-deps 可能需要管理员权限，这里只装 chromium 足够了
-        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        if install_deps:
+            # 安装系统依赖 (对应 sudo playwright install-deps)
+            cmd = [sys.executable, "-m", "playwright", "install-deps"]
+        else:
+            # 安装浏览器内核 (对应 playwright install chromium)
+            cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+            
         process = subprocess.run(cmd, capture_output=True, text=True)
         
         if process.returncode != 0:
@@ -176,21 +182,35 @@ def auto_login_playwright():
             try:
                 browser = p.chromium.launch(headless=False)
             except Exception as e:
-                # 捕获浏览器缺失错误，进行自动修复
+                # 捕获浏览器错误，进行自动修复
                 error_msg = str(e)
+                
+                # 情况 A: 缺少浏览器内核 (Executable doesn't exist)
                 if "Executable doesn't exist" in error_msg:
                     status_placeholder.warning("⚙️ 检测到浏览器内核缺失，正在自动下载 (约需 1-2 分钟)...")
-                    
-                    # 执行自动安装
-                    success, msg = force_install_playwright()
-                    
+                    success, msg = force_install_playwright(install_deps=False)
                     if success:
                         status_placeholder.success("✅ 内核安装完成！正在启动...")
-                        # 再次尝试启动
                         browser = p.chromium.launch(headless=False)
                     else:
                         status_placeholder.error(f"❌ 自动安装失败: {msg}")
-                        st.error(f"请尝试在终端手动运行此命令: {sys.executable} -m playwright install chromium")
+                        return None, None
+                        
+                # 情况 B: 缺少系统依赖 (Host system is missing dependencies)
+                elif "Host system is missing dependencies" in error_msg:
+                    status_placeholder.warning("⚙️ 检测到系统组件缺失，正在尝试自动修复...")
+                    
+                    # 尝试自动安装依赖
+                    success, msg = force_install_playwright(install_deps=True)
+                    
+                    if success:
+                        status_placeholder.success("✅ 系统组件修复完成！正在启动...")
+                        browser = p.chromium.launch(headless=False)
+                    else:
+                        # 自动修复失败（通常因为需要输入密码），给用户提供最简单的复制命令
+                        status_placeholder.error("❌ 自动修复失败（权限不足）。请复制下方命令到终端运行：")
+                        st.code("sudo playwright install-deps", language="bash")
+                        st.caption("提示：在终端粘贴并回车后，输入您的开机密码即可（输入时密码不显示）。")
                         return None, None
                 else:
                     raise e
@@ -248,113 +268,3 @@ def auto_login_playwright():
         return None, None
         
     return token, cookie_string
-
-# --- 主程序 UI 逻辑 ---
-
-# 初始化 session state
-if 'wx_token' not in st.session_state:
-    st.session_state['wx_token'] = ''
-if 'wx_cookie' not in st.session_state:
-    st.session_state['wx_cookie'] = ''
-
-with st.sidebar:
-    st.title("🤖 自动获取助手")
-    st.caption("基于 Playwright (Chromium)")
-
-    # 自动获取按钮
-    if st.button("📢 唤起浏览器扫码", type="primary"):
-        token, cookie = auto_login_playwright()
-        if token and cookie:
-            st.session_state['wx_token'] = token
-            st.session_state['wx_cookie'] = cookie
-            st.balloons()
-            st.success("凭证已自动填入！")
-            
-            # 自动备份到桌面 (可选)
-            try:
-                home = os.path.expanduser("~")
-                save_dir = os.path.join(home, "Desktop", "finance")
-                if not os.path.exists(save_dir):
-                    os.makedirs(save_dir)
-                with open(os.path.join(save_dir, "weixin_config_backup.txt"), "w") as f:
-                    f.write(f"Token:\n{token}\n\nCookie:\n{cookie}")
-            except:
-                pass 
-                
-            time.sleep(1)
-            st.rerun()
-    
-    st.divider()
-    
-    with st.expander("🔑 凭证配置", expanded=True):
-        wx_token = st.text_input("Token", value=st.session_state['wx_token'])
-        wx_cookie = st.text_area("Cookie", value=st.session_state['wx_cookie'], height=150)
-    
-    st.divider()
-    target_query = st.text_input("🔍 目标公众号", placeholder="输入名称")
-    scrape_pages = st.number_input("抓取页数", 1, 10, 2)
-    enable_details = st.checkbox("采集正文 (阅读模式必选)", value=True)
-    
-    start_btn = st.button("🚀 开始分析数据", use_container_width=True)
-
-# --- 主界面 ---
-if start_btn and wx_token and wx_cookie and target_query:
-    crawler = WechatCrawler(wx_token, wx_cookie)
-    
-    with st.status("正在建立数据连接...", expanded=True) as status:
-        status.write("🔍 定位目标账号...")
-        accounts = crawler.search_account(target_query)
-        if not accounts:
-            status.update(label="未找到账号，可能是Cookie已失效，请重新扫码", state="error")
-            st.stop()
-        
-        target = accounts[0]
-        status.write(f"✅ 锁定: {target['nickname']}")
-        
-        status.write("📃 拉取文章列表...")
-        raw_list = crawler.fetch_article_list(target['fakeid'], pages=scrape_pages)
-        
-        if not raw_list:
-             status.update(label="未获取到文章列表，请检查凭证", state="error")
-             st.stop()
-
-        status.write("🧹 深度采集正文内容...")
-        df_res = process_data(raw_list, crawler, fetch_details=enable_details)
-        
-        status.update(label="数据准备就绪!", state="complete")
-        st.session_state['data'] = df_res
-        st.session_state['account'] = target['nickname']
-
-if 'data' in st.session_state:
-    df = st.session_state['data']
-    nickname = st.session_state['account']
-    st.header(f"📰 {nickname} · 深度阅读看板")
-    
-    tab_read, tab_list = st.tabs(["👓 阅读模式", "📋 文章列表"])
-    
-    with tab_read:
-        if 'content' in df.columns and not df['content'].isna().all():
-            df['select_label'] = df['date'].astype(str) + " | " + df['title']
-            selected_article_label = st.selectbox("选择文章:", df['select_label'].tolist())
-            article = df[df['select_label'] == selected_article_label].iloc[0]
-            
-            with st.container():
-                st.markdown(f"## {article['title']}")
-                st.caption(f"作者: {article['author']} | 发布时间: {article['publish_time']} | {article['is_original']}")
-                st.divider()
-                if article['content']:
-                    st.markdown(article['content'].replace("\n", "\n\n"))
-                else:
-                    st.warning("正文内容为空")
-                    st.markdown(f"[点击跳转原文链接]({article['link']})")
-        else:
-            st.info("暂无正文数据，请确保勾选了【采集正文】并重新抓取。")
-            
-    with tab_list:
-        st.dataframe(
-            df[['title', 'date', 'author', 'is_original', 'link']],
-            use_container_width=True,
-            column_config={"link": st.column_config.LinkColumn("原文链接")}
-        )
-else:
-    st.info("👈 点击左侧 **'唤起浏览器扫码'** 开始。")
