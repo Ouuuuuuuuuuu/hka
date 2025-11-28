@@ -1,9 +1,5 @@
 streamlit
 pandas
 requests
-plotly
-jieba
-openpyxl
 beautifulsoup4
-lxml
 playwright
