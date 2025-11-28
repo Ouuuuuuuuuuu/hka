@@ -643,7 +643,7 @@ if st.session_state['all_data'] is not None:
                 
                 # UI 美化：使用 Progress Bar 展示 Top 10
                 top10_data = pd.DataFrame(top10, columns=['关键词', '频次'])
-                max_count = top10_data['频次'].max() if not top10_data.empty else 1
+                max_count = int(top10_data['频次'].max()) if not top10_data.empty else 1
                 
                 st.dataframe(
                     top10_data,
@@ -776,7 +776,7 @@ if st.session_state['all_data'] is not None:
                         s_top10 = s_counts.most_common(10)
                         
                         s_top10_df = pd.DataFrame(s_top10, columns=['关键词', '频次'])
-                        s_max_count = s_top10_df['频次'].max() if not s_top10_df.empty else 1
+                        s_max_count = int(s_top10_df['频次'].max()) if not s_top10_df.empty else 1
                         
                         st.dataframe(
                             s_top10_df,
