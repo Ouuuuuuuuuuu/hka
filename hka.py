@@ -4,23 +4,25 @@ import requests
 import time
 import random
 import plotly.express as px
-import plotly.graph_objects as go
 import datetime
 from bs4 import BeautifulSoup
 from collections import Counter
-import jieba
 import jieba.analyse
+
+# --- 新增：自动化登录模块 ---
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # --- 页面配置 ---
 st.set_page_config(
-    page_title="WeChat Insight Pro (Reader Mode)",
-    page_icon="📖",
+    page_title="WeChat Insight Pro",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # --- 核心爬虫逻辑 ---
-
 class WechatCrawler:
     def __init__(self, token, cookie):
         self.base_url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
@@ -72,13 +74,14 @@ class WechatCrawler:
                             "link": item.get("link"),
                             "create_time": item.get("create_time"),
                             "cover": item.get("cover"),
-                            "item_idx": item.get("item_idx", 1), # 1为头条，2为次条
-                            "copyright_type": item.get("copyright_type", 0) # 1原创
+                            "item_idx": item.get("item_idx", 1),
+                            "copyright_type": item.get("copyright_type", 0)
                         })
                 else:
                     break
                 progress_bar.progress((page + 1) / pages)
-                time.sleep(random.uniform(1.5, 3)) # 列表页请求间隔
+                # 随机延时，避免触发反爬机制
+                time.sleep(random.uniform(1.0, 2.0))
             except:
                 break
         
@@ -87,9 +90,7 @@ class WechatCrawler:
         return all_articles
 
     def fetch_article_content(self, url):
-        """
-        深度采集：访问详情页获取正文、作者等信息
-        """
+        """深度采集：访问详情页获取正文、作者等信息"""
         try:
             res = self.session.get(url, timeout=10)
             soup = BeautifulSoup(res.text, "lxml")
@@ -105,12 +106,12 @@ class WechatCrawler:
                 content_text = ""
             
             # 提取作者
-            author_tag = soup.find("strong", {"class": "profile_nickname"}) # 旧版
+            author_tag = soup.find("strong", {"class": "profile_nickname"})
             if not author_tag:
                 author_tag = soup.find("a", {"id": "js_name"})
             author = author_tag.get_text().strip() if author_tag else "未知"
             
-            # 提取IP属地
+            # 尝试提取IP属地 (微信IP属地通常在Script变量中)
             scripts = soup.find_all("script")
             ip_location = "IP未知"
             for script in scripts:
@@ -126,25 +127,18 @@ class WechatCrawler:
             return "", "获取失败", "获取失败"
 
 # --- 数据处理工具 ---
-
 def process_data(articles, crawler=None, fetch_details=False):
     if not articles:
         return pd.DataFrame()
     
     df = pd.DataFrame(articles)
     
-    # 时间处理
+    # 时间格式化
     df['publish_time'] = pd.to_datetime(df['create_time'], unit='s')
     df['date'] = df['publish_time'].dt.date
-    df['year_week'] = df['publish_time'].dt.strftime('%Y-第%W周')
-    df['weekday'] = df['publish_time'].dt.weekday
-    df['hour'] = df['publish_time'].dt.hour
-    
-    # 标识处理
-    df['position'] = df['item_idx'].apply(lambda x: '头条' if x == 1 else f'次条({x})')
     df['is_original'] = df['copyright_type'].apply(lambda x: '原创' if x == 1 else '转载')
     
-    # 深度采集
+    # 深度采集逻辑
     if fetch_details and crawler:
         st.info("🐢 正在深度采集全文，速度较慢，请耐心等待...")
         details = []
@@ -157,7 +151,7 @@ def process_data(articles, crawler=None, fetch_details=False):
                 'ip_location': ip
             })
             bar.progress((idx + 1) / len(df))
-            time.sleep(random.uniform(0.5, 1.5)) # 必须延时
+            time.sleep(0.5) # 必须延时，否则容易封IP
         
         detail_df = pd.DataFrame(details)
         df = pd.concat([df, detail_df], axis=1)
@@ -169,38 +163,95 @@ def process_data(articles, crawler=None, fetch_details=False):
 
     return df
 
-def extract_keywords(df):
-    """提取标题和正文中的关键词"""
-    text_corpus = "".join(df['title'].astype(str).tolist())
-    if 'content' in df.columns and df['content'].any():
-        # 如果采集了正文，权重稍微低一点加入语料
-        content_corpus = "".join(df['content'].astype(str).tolist())
-        text_corpus += content_corpus[:100000] # 限制长度防止过慢
+# --- 辅助函数：自动登录获取Cookie ---
+def auto_login_get_cookie():
+    try:
+        # 初始化 Chrome 驱动
+        options = webdriver.ChromeOptions()
+        # 注意：扫码登录不能使用无头模式(headless)，必须显示浏览器窗口
         
-    keywords = jieba.analyse.extract_tags(text_corpus, topK=20, withWeight=True)
-    return pd.DataFrame(keywords, columns=['word', 'weight'])
+        status_placeholder = st.empty()
+        status_placeholder.info("🚀 正在启动浏览器，请在弹出的窗口中扫码登录...")
+        
+        # 自动下载并启动匹配版本的 ChromeDriver
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        
+        # 打开微信公众平台
+        driver.get("https://mp.weixin.qq.com/")
+        
+        # 循环检测是否登录成功 (检测URL中是否包含 token)
+        max_wait = 180 # 3分钟超时
+        start_time = time.time()
+        
+        token = ""
+        cookies_str = ""
+        
+        while True:
+            current_url = driver.current_url
+            if "token=" in current_url:
+                status_placeholder.success("✅ 扫码成功！正在提取凭证...")
+                # 提取 Token
+                try:
+                    token = current_url.split("token=")[1].split("&")[0]
+                except:
+                    pass
+                
+                # 提取 Cookie
+                selenium_cookies = driver.get_cookies()
+                # 将 Cookie 列表转换为字符串格式
+                cookie_items = [f"{c['name']}={c['value']}" for c in selenium_cookies]
+                cookies_str = "; ".join(cookie_items)
+                
+                break
+            
+            if time.time() - start_time > max_wait:
+                status_placeholder.error("⏰ 登录超时，请重试")
+                break
+            
+            time.sleep(1)
+        
+        driver.quit()
+        status_placeholder.empty()
+        return token, cookies_str
+        
+    except Exception as e:
+        st.error(f"启动浏览器失败，请确保安装了 Chrome 浏览器: {str(e)}")
+        return None, None
 
 # --- 主程序逻辑 ---
 
+# 初始化 Session State 用于存储 Token 和 Cookie
+if 'wx_token' not in st.session_state:
+    st.session_state['wx_token'] = ''
+if 'wx_cookie' not in st.session_state:
+    st.session_state['wx_cookie'] = ''
+
 with st.sidebar:
-    st.title("📖 公众号热点阅读器")
-    st.caption("真实数据 · 关键词挖掘 · 沉浸阅读")
+    st.title("🤖 自动获取助手")
     
-    with st.expander("🔑 凭证配置 (必填)", expanded=True):
-        wx_token = st.text_input("Token", help="URL中的token参数")
-        wx_cookie = st.text_area("Cookie", help="F12获取的完整Cookie")
+    # 自动获取按钮
+    if st.button("📢 点击唤起浏览器扫码", type="primary"):
+        token, cookie = auto_login_get_cookie()
+        if token and cookie:
+            st.session_state['wx_token'] = token
+            st.session_state['wx_cookie'] = cookie
+            st.success("凭证已自动填入！")
+            time.sleep(1)
+            st.rerun() # 刷新页面以显示填入的数据
     
     st.divider()
-    target_query = st.text_input("🔍 目标公众号", placeholder="输入名称")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        scrape_pages = st.number_input("抓取页数", 1, 10, 2)
-    with col2:
-        # 既然用户要读全文，这里默认为 True 比较好，但为了防封号还是留选项
-        enable_details = st.checkbox("采集正文", value=True, help="必须勾选才能阅读全文")
-        
-    start_btn = st.button("🚀 开始抓取", type="primary", use_container_width=True)
+    with st.expander("🔑 凭证配置", expanded=True):
+        # 使用 session_state 自动填充
+        wx_token = st.text_input("Token", value=st.session_state['wx_token'], help="URL中的token参数")
+        wx_cookie = st.text_area("Cookie", value=st.session_state['wx_cookie'], height=150, help="完整的Cookie字符串")
+    
+    st.divider()
+    target_query = st.text_input("🔍 目标公众号", placeholder="输入名称，如：清华大学")
+    scrape_pages = st.number_input("抓取页数", 1, 10, 2)
+    enable_details = st.checkbox("采集正文 (阅读模式必选)", value=True)
+    
+    start_btn = st.button("🚀 开始分析数据", use_container_width=True)
 
 # --- 主界面 ---
 
@@ -208,22 +259,25 @@ if start_btn and wx_token and wx_cookie and target_query:
     crawler = WechatCrawler(wx_token, wx_cookie)
     
     with st.status("正在建立数据连接...", expanded=True) as status:
+        # 1. 搜索
         status.write("🔍 定位目标账号...")
         accounts = crawler.search_account(target_query)
         if not accounts:
-            status.update(label="未找到账号，请检查Cookie", state="error")
+            status.update(label="未找到账号，可能是Cookie已失效，请重新扫码", state="error")
             st.stop()
         
         target = accounts[0]
         status.write(f"✅ 锁定: {target['nickname']}")
         
+        # 2. 列表抓取
         status.write("📃 拉取文章列表...")
         raw_list = crawler.fetch_article_list(target['fakeid'], pages=scrape_pages)
         
         if not raw_list:
-            status.update(label="未获取到数据", state="error")
-            st.stop()
+             status.update(label="未获取到文章列表，请检查凭证", state="error")
+             st.stop()
 
+        # 3. 深度采集
         status.write("🧹 深度采集正文内容...")
         df_res = process_data(raw_list, crawler, fetch_details=enable_details)
         
@@ -233,62 +287,37 @@ if start_btn and wx_token and wx_cookie and target_query:
         st.session_state['account'] = target['nickname']
 
 # --- 看板展示 ---
-
 if 'data' in st.session_state:
     df = st.session_state['data']
     nickname = st.session_state['account']
-    
     st.header(f"📰 {nickname} · 深度阅读看板")
     
-    # --- Tab 分区 ---
-    tab_read, tab_hot, tab_list = st.tabs(["👓 沉浸阅读模式", "🔥 核心热点分析", "📋 文章列表"])
+    tab_read, tab_list = st.tabs(["👓 阅读模式", "📋 文章列表"])
     
-    # 1. 沉浸阅读模式
     with tab_read:
-        if enable_details and 'content' in df.columns:
-            # 拼接标题和日期作为选项
+        if 'content' in df.columns and not df['content'].isna().all():
+            # 生成下拉框选项
             df['select_label'] = df['date'].astype(str) + " | " + df['title']
-            selected_article_label = st.selectbox("选择要阅读的文章:", df['select_label'].tolist())
+            selected_article_label = st.selectbox("选择文章:", df['select_label'].tolist())
             
             # 获取选中文章数据
             article = df[df['select_label'] == selected_article_label].iloc[0]
             
+            # 文章展示容器
             with st.container():
                 st.markdown(f"## {article['title']}")
-                st.caption(f"作者: {article['author']} | 发布时间: {article['publish_time']} | {article['is_original']} | IP属地: {article['ip_location']}")
+                st.caption(f"作者: {article['author']} | 发布时间: {article['publish_time']} | {article['is_original']} | IP: {article['ip_location']}")
                 st.divider()
                 
                 # 正文展示区
                 if article['content']:
-                    st.markdown(article['content'].replace("\n", "\n\n")) # 增加Markdown换行
+                    st.markdown(article['content'].replace("\n", "\n\n")) # 优化排版
                 else:
-                    st.warning("正文未采集，请确保勾选侧边栏的【采集正文】并重新抓取。")
+                    st.warning("正文内容为空或未采集")
                     st.markdown(f"[点击跳转原文链接]({article['link']})")
         else:
-            st.info("请在左侧侧边栏勾选【采集正文】以启用阅读模式。")
-
-    # 2. 核心热点分析
-    with tab_hot:
-        st.subheader("词频热点挖掘")
-        st.caption("基于文章标题和正文的TF-IDF算法分析，挖掘该公众号近期的核心关注点。")
-        
-        if not df.empty:
-            keywords_df = extract_keywords(df)
+            st.info("暂无正文数据，请确保勾选了【采集正文】并重新抓取。")
             
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                fig = px.bar(keywords_df, x='weight', y='word', orientation='h', 
-                             title="核心热词 TOP 20", labels={'weight': '热度权重', 'word': '关键词'},
-                             color='weight', color_continuous_scale='Reds')
-                fig.update_layout(yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                st.write("📋 **热词列表**")
-                st.dataframe(keywords_df, use_container_width=True)
-        else:
-            st.write("暂无数据")
-
-    # 3. 文章列表
     with tab_list:
         st.dataframe(
             df[['title', 'date', 'author', 'is_original', 'link']],
@@ -297,6 +326,5 @@ if 'data' in st.session_state:
                 "link": st.column_config.LinkColumn("原文链接")
             }
         )
-
 else:
-    st.info("👈 请在左侧配置抓取参数。为了阅读全文，请务必勾选【采集正文】。")
+    st.info("👈 请在左侧点击 **'唤起浏览器扫码'** 获取凭证，然后输入公众号名称开始抓取。")
