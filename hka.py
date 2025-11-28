@@ -52,7 +52,7 @@ def get_font_path():
             
     try:
         url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
-        res = requests.get(url, timeout=30)
+        res = requests.get(url, timeout=300)
         with open(local_font, "wb") as f:
             f.write(res.content)
         return local_font
@@ -272,7 +272,7 @@ def call_ai_analysis_stream(data_payload, reasoning_placeholder, report_placehol
     full_content = ""
     
     try:
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=300) as response:
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=3000) as response:
             if response.status_code != 200:
                 return False, f"API Error: {response.status_code} - {response.text}", ""
                 
