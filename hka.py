@@ -9,6 +9,7 @@ import subprocess
 import jieba
 import matplotlib.pyplot as plt
 import collections
+import re
 from wordcloud import WordCloud
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
@@ -18,113 +19,107 @@ import base64
 
 # --- 页面基础配置 ---
 st.set_page_config(
-    page_title="高校公众号舆情分析系统",
-    page_icon="🎓",
+    page_title="公众号舆情分析系统",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 解决 Matplotlib 中文乱码 (尽可能尝试多种字体)
-plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'PingFang SC', 'Heiti TC', 'Microsoft YaHei', 'sans-serif']
+# ==========================================
+# 字体管理 (解决中文乱码)
+# ==========================================
+
+def get_font_path():
+    """
+    获取中文字体路径。如果系统没有，尝试下载 SimHei。
+    """
+    # 1. 优先检查当前目录下是否有字体文件
+    local_font = "SimHei.ttf"
+    if os.path.exists(local_font):
+        return local_font
+    
+    # 2. 检查常见系统路径
+    system_fonts = [
+        "/System/Library/Fonts/PingFang.ttc", # MacOS
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf", # Windows
+        "C:\\Windows\\Fonts\\msyh.ttc", 
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", # Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    ]
+    for path in system_fonts:
+        if os.path.exists(path):
+            return path
+            
+    # 3. 如果都找不到，尝试下载 (针对 Streamlit Cloud)
+    st.toast("正在下载中文字体，请稍候...", icon="📥")
+    try:
+        url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
+        res = requests.get(url, timeout=30)
+        with open(local_font, "wb") as f:
+            f.write(res.content)
+        return local_font
+    except:
+        pass
+        
+    return None
+
+# 设置 Matplotlib 字体
+font_path = get_font_path()
+if font_path:
+    # 注册字体给 matplotlib
+    import matplotlib.font_manager as fm
+    fe = fm.FontEntry(fname=font_path, name='CustomFont')
+    fm.fontManager.ttflist.insert(0, fe)
+    plt.rcParams['font.sans-serif'] = ['CustomFont']
+else:
+    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ==========================================
 # 核心工具类
 # ==========================================
 
-def get_chinese_font_path():
-    """
-    尝试获取系统中的中文字体路径，用于 WordCloud
-    """
-    system = sys.platform
-    font_paths = []
-    
-    if system == "darwin": # MacOS
-        font_paths = [
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc",
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
-        ]
-    elif system == "win32": # Windows
-        font_paths = [
-            "C:\\Windows\\Fonts\\simhei.ttf",
-            "C:\\Windows\\Fonts\\msyh.ttc",
-            "C:\\Windows\\Fonts\\simsun.ttc"
-        ]
-    else: # Linux (Streamlit Cloud)
-        font_paths = [
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-        ]
-        
-    for path in font_paths:
-        if os.path.exists(path):
-            return path
-            
-    return None # 如果没找到，词云可能会显示方框，但不会报错
-
 def clean_wechat_html(html_content):
     """
-    [Bug修复] 深度清洗微信HTML，确保图片显示和排版正常
+    [修复版] 深度清洗微信HTML，强制显示内容
     """
     if not html_content:
         return "<div style='padding:20px; text-align:center; color:#999'>📭 正文内容为空</div>"
     
     soup = BeautifulSoup(html_content, "html.parser")
     
-    # 1. 移除 script 标签，防止执行恶意代码
-    for script in soup(["script", "style"]):
-        script.decompose()
+    # 1. 关键修复：移除 visibility: hidden
+    # 微信正文 div (js_content) 默认是隐藏的，依赖 JS 显示。我们需要手动强制显示。
+    content_div = soup.find("div", id="js_content")
+    if content_div:
+        # 移除原有 style，或者强制覆盖
+        existing_style = content_div.get('style', '')
+        content_div['style'] = existing_style + '; visibility: visible !important; opacity: 1 !important;'
+    
+    # 2. 移除干扰脚本
+    for tag in soup(["script", "style", "iframe"]):
+        tag.decompose()
 
-    # 2. 破解图片防盗链 & 修复懒加载 (关键步骤)
+    # 3. 破解图片防盗链
     for img in soup.find_all("img"):
-        # 微信图片通常放在 data-src 中
         if "data-src" in img.attrs:
             img["src"] = img["data-src"]
-        
-        # 必须添加 no-referrer，否则微信服务器会返回 403 Forbidden (裂图)
         img["referrerpolicy"] = "no-referrer"
-        
-        # 强制样式：自适应宽度，居中
-        img["style"] = "max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
+        img["style"] = "max-width: 100% !important; height: auto !important; display: block; margin: 10px auto; border-radius: 4px;"
 
-    # 3. 优化排版容器
-    # 注入一个基础样式，模拟微信阅读体验
+    # 4. 包装容器
     wrapper = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
-                line-height: 1.8;
-                color: #333;
-                background-color: #fff;
-                margin: 0;
-                padding: 10px;
-                font-size: 16px;
-                text-align: justify;
-            }}
-            p {{ margin-bottom: 20px; }}
-            strong {{ color: #000; font-weight: 700; }}
-            blockquote {{
-                border-left: 4px solid #07c160;
-                background-color: #f8f8f8;
-                margin: 20px 0;
-                padding: 15px;
-                color: #666;
-            }}
-        </style>
-    </head>
-    <body>
-        <div id="js_content">
-            {str(soup)}
-        </div>
-    </body>
-    </html>
+    <div style="
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        line-height: 1.8;
+        color: #333;
+        font-size: 16px;
+        background-color: #fff;
+        padding: 15px;
+    ">
+        {str(soup)}
+    </div>
     """
     return wrapper
 
@@ -135,12 +130,20 @@ def generate_wordcloud_img(text_data):
     if not text_data:
         return None, []
         
-    font_path = get_chinese_font_path()
+    f_path = get_font_path()
     
     # 使用 jieba 分词
-    words = jieba.cut(text_data)
-    # 过滤停用词 (这里简单过滤单字和常见虚词)
-    filtered_words = [w for w in words if len(w) > 1 and w not in ['的', '了', '和', '是', '就', '都', '而', '及', '与', '在', '为', '对', '等', '篇', '微', '信', '号', '月', '日', '年', '有', '我', '他', '她', '它', '这', '那']]
+    words = jieba.lcut(text_data)
+    
+    # 扩展停用词表
+    stop_words = set([
+        '的', '了', '和', '是', '就', '都', '而', '及', '与', '在', '为', '对', '等', '篇', 
+        '微', '信', '号', '月', '日', '年', '有', '我', '他', '她', '它', '这', '那',
+        '我们', '图片', '来源', '原标', '题', '公众', '点击', '阅读', '原文', '下方', '关注',
+        '展开', '全文', '视频', '分享', '收藏', '点赞', '在看'
+    ])
+    
+    filtered_words = [w for w in words if len(w) > 1 and w not in stop_words]
     space_split_text = " ".join(filtered_words)
     
     if not space_split_text.strip():
@@ -148,11 +151,11 @@ def generate_wordcloud_img(text_data):
 
     try:
         wc = WordCloud(
-            font_path=font_path,
+            font_path=f_path,
             width=800,
             height=400,
             background_color='white',
-            max_words=100,
+            max_words=150,
             colormap='viridis',
             prefer_horizontal=0.9
         ).generate(space_split_text)
@@ -225,7 +228,7 @@ class WechatCrawler:
                         })
                 else:
                     break
-                time.sleep(random.uniform(1.0, 2.0))
+                time.sleep(random.uniform(0.5, 1.5))
             except:
                 break
         return all_articles
@@ -233,19 +236,17 @@ class WechatCrawler:
     def fetch_content(self, url):
         try:
             res = self.session.get(url, timeout=15)
-            # 使用 html.parser 兼容性更好
+            # 使用 html.parser
             soup = BeautifulSoup(res.text, "html.parser")
             
-            # 尝试获取正文容器，微信通常是 js_content
-            content_div = soup.find("div", {"id": "js_content"}) or soup.find("div", {"class": "rich_media_content"})
+            # 查找正文 (js_content)
+            content_div = soup.find("div", id="js_content")
             
             if content_div:
-                final_html = clean_wechat_html(str(content_div))
-                
-                # 提取纯文本用于词云分析
+                final_html = clean_wechat_html(str(soup)) # 传入整个soup让clean函数处理
                 plain_text = content_div.get_text(strip=True)
             else:
-                final_html = "<div>解析失败，可能文章已删除或需要特殊权限</div>"
+                final_html = clean_wechat_html(res.text) # 备用：直接传原文
                 plain_text = ""
             
             author_tag = soup.find("strong", {"class": "profile_nickname"}) or soup.find("a", {"id": "js_name"})
@@ -253,10 +254,10 @@ class WechatCrawler:
             
             return final_html, author, plain_text
         except Exception:
-            return "", "获取失败", ""
+            return "<div>获取失败</div>", "获取失败", ""
 
 # ==========================================
-# 自动化登录模块 (确保无头模式)
+# 自动化登录模块
 # ==========================================
 
 def force_install_chromium():
@@ -352,8 +353,8 @@ if 'wx_cookie' not in st.session_state: st.session_state['wx_cookie'] = ''
 if 'all_data' not in st.session_state: st.session_state['all_data'] = None
 
 with st.sidebar:
-    st.title("🎓 高校舆情分析 Pro")
-    st.caption("Playwright 驱动 · Jieba 分词 · 可视化")
+    st.title("🎓 公众号舆情分析 Pro")
+    st.caption("Playwright 驱动 · 词云分析 · 数据可视化")
     st.markdown("---")
     
     # 登录区
@@ -376,13 +377,13 @@ with st.sidebar:
     st.markdown("---")
     # 设置区
     targets_input = st.text_area(
-        "2. 输入高校公众号 (一行一个)", 
-        placeholder="清华大学\n北京大学\n复旦大学",
+        "2. 输入公众号名称", 
+        placeholder="支持逗号、空格或换行分隔\n例如：\n清华大学\n北京大学, 复旦大学",
         height=150
     )
     
-    page_count = st.slider("抓取页数 (每页5篇)", 1, 10, 2)
-    run_btn = st.button("🚀 3. 开始抓取与分析", use_container_width=True)
+    page_count = st.slider("每个号抓取页数 (每页5篇)", 1, 5, 2)
+    run_btn = st.button("🚀 3. 开始分析", use_container_width=True)
 
 # --- 主逻辑区 ---
 
@@ -394,17 +395,17 @@ if run_btn:
         st.error("请输入至少一个公众号！")
         st.stop()
         
-    target_list = [line.strip() for line in targets_input.split('\n') if line.strip()]
+    # 智能分割输入：支持逗号、空格、换行
+    target_list = re.split(r'[,\s\n]+', targets_input.strip())
+    target_list = [t for t in target_list if t] # 去空
+    
     crawler = WechatCrawler(token_input, cookie_input)
     
     all_results = []
-    
-    # 采集进度
-    status_container = st.status("正在进行多校数据采集...", expanded=True)
+    status_container = st.status("正在进行数据采集...", expanded=True)
     progress_bar = st.progress(0)
     
     with status_container:
-        # 验证
         if not crawler.check_auth()[0]:
             st.error("权限验证失败，请重新扫码！")
             st.stop()
@@ -413,7 +414,6 @@ if run_btn:
         for i, target_name in enumerate(target_list):
             st.write(f"🔄 [{i+1}/{total_targets}] 分析: **{target_name}** ...")
             
-            # 搜索
             accounts = crawler.search_account(target_name)
             if not accounts:
                 st.warning(f"⚠️ 未找到: {target_name}，跳过")
@@ -423,28 +423,24 @@ if run_btn:
             fakeid = target_account['fakeid']
             real_nickname = target_account['nickname']
             
-            # 列表
             articles = crawler.fetch_article_list(fakeid, pages=page_count)
             
-            # 正文详情 (用于词云)
             if articles:
                 st.write(f"   - 抓取正文 ({len(articles)}篇)...")
                 for art in articles:
                     html_content, author, plain_text = crawler.fetch_content(art['link'])
-                    art['content_html'] = html_content # 用于显示
-                    art['plain_text'] = plain_text # 用于分词
+                    art['content_html'] = html_content
+                    art['plain_text'] = plain_text
                     art['author'] = author
-                    # 补充元数据
                     art['account_name'] = real_nickname
                     time.sleep(0.5)
 
             all_results.extend(articles)
             progress_bar.progress((i + 1) / total_targets)
-            time.sleep(random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(1.0, 2.0))
             
         status_container.update(label="✅ 采集与分析完成！", state="complete")
     
-    # 存入 Session
     if all_results:
         df = pd.DataFrame(all_results)
         df['发布时间'] = pd.to_datetime(df['create_time'], unit='s')
@@ -460,12 +456,10 @@ if st.session_state['all_data'] is not None:
     df = st.session_state['all_data']
     
     st.divider()
-    st.title("📊 高校新媒体大数据看板")
+    st.title("📊 公众号新媒体大数据看板")
     
-    # ----------------------------------------------------
-    # 1. 宏观数据分析 (所有学校)
-    # ----------------------------------------------------
-    st.header("1. 全网综合舆情 (All Schools)")
+    # 1. 宏观数据
+    st.header("1. 全网综合舆情 (All Accounts)")
     
     tab_global_1, tab_global_2, tab_global_3 = st.tabs(["☁️ 综合词云", "🏆 影响力排行", "📈 发文趋势"])
     
@@ -478,7 +472,7 @@ if st.session_state['all_data'] is not None:
             if wc_title:
                 st.image(wc_title.to_array(), use_container_width=True)
             else:
-                st.info("数据不足生成词云")
+                st.info("数据不足")
                 
         with col_g2:
             st.subheader("全网·内容词云")
@@ -486,73 +480,64 @@ if st.session_state['all_data'] is not None:
             wc_content, words_list = generate_wordcloud_img(all_contents)
             if wc_content:
                 st.image(wc_content.to_array(), use_container_width=True)
-                
-            # 全网 TOP 10 关键词
+            
             if words_list:
-                st.caption("🔥 全网 TOP 10 热词:")
+                st.markdown("**🔥 全网 TOP 10 热词:**")
                 counts = collections.Counter(words_list)
                 top10 = counts.most_common(10)
-                st.write(" | ".join([f"**{w}**({c})" for w, c in top10]))
+                # 使用 DataFrame 显示更整齐
+                top10_df = pd.DataFrame(top10, columns=['关键词', '频次'])
+                st.dataframe(top10_df.T, use_container_width=True)
 
     with tab_global_2:
-        st.subheader("高校活跃度排行榜 (按发文量)")
-        st.caption("注：微信PC接口无法获取竞品文章的阅读量/点赞数，故此处展示【发文活跃度】排行。")
-        
-        # 本周/本月计算
-        now = pd.Timestamp.now()
-        one_week_ago = now - pd.Timedelta(days=7)
-        one_month_ago = now - pd.Timedelta(days=30)
-        
-        df['dt'] = pd.to_datetime(df['create_time'], unit='s')
-        
+        st.caption("注：数据基于本次抓取的样本计算。")
         col_r1, col_r2 = st.columns(2)
+        
+        now = pd.Timestamp.now()
+        
         with col_r1:
             st.markdown("#### 📅 本周发文榜")
-            week_df = df[df['dt'] > one_week_ago]
+            week_df = df[df['发布时间'] > (now - pd.Timedelta(days=7))]
             if not week_df.empty:
                 week_rank = week_df['account_name'].value_counts().reset_index()
-                week_rank.columns = ['高校名称', '发文数']
+                week_rank.columns = ['公众号', '发文数']
                 st.dataframe(week_rank, use_container_width=True, hide_index=True)
             else:
-                st.info("本周无发文")
+                st.info("本周无数据")
                 
         with col_r2:
             st.markdown("#### 🗓️ 本月发文榜")
-            month_df = df[df['dt'] > one_month_ago]
+            month_df = df[df['发布时间'] > (now - pd.Timedelta(days=30))]
             if not month_df.empty:
                 month_rank = month_df['account_name'].value_counts().reset_index()
-                month_rank.columns = ['高校名称', '发文数']
+                month_rank.columns = ['公众号', '发文数']
                 st.dataframe(month_rank, use_container_width=True, hide_index=True)
             else:
-                st.info("本月无发文")
+                st.info("本月无数据")
 
     with tab_global_3:
         st.subheader("全网发布时间分布")
-        # 按日期统计
         date_counts = df.groupby('发布日期').size()
         st.line_chart(date_counts)
 
     st.markdown("---")
 
-    # ----------------------------------------------------
-    # 2. 个体画像分析 (每个学校)
-    # ----------------------------------------------------
-    st.header("2. 单校深度画像 (Single School)")
+    # 2. 个体画像
+    st.header("2. 单号深度画像 (Single Account)")
     
-    school_list = df['account_name'].unique()
-    selected_school = st.selectbox("👉 选择一所高校查看详情:", school_list)
+    account_list = df['account_name'].unique()
+    selected_account = st.selectbox("👉 选择一个公众号查看详情:", account_list)
     
-    if selected_school:
-        sub_df = df[df['account_name'] == selected_school]
+    if selected_account:
+        sub_df = df[df['account_name'] == selected_account].copy()
         
-        # 2.1 统计指标
+        # 统计指标
         c1, c2, c3 = st.columns(3)
         c1.metric("总发文数", len(sub_df))
         c2.metric("原创比例", f"{len(sub_df[sub_df['类型']=='原创']) / len(sub_df) * 100:.1f}%" if len(sub_df)>0 else "0%")
         c3.metric("最新发布", str(sub_df['发布日期'].max()))
         
-        # 2.2 词云与TOP10
-        tab_s1, tab_s2, tab_s3 = st.tabs(["☁️ 专属词云", "📊 文章列表", "👓 阅读正文"])
+        tab_s1, tab_s2 = st.tabs(["📊 数据分析", "📰 文章列表与阅读"])
         
         with tab_s1:
             sc1, sc2 = st.columns(2)
@@ -568,30 +553,40 @@ if st.session_state['all_data'] is not None:
                 s_wc_c, s_words = generate_wordcloud_img(s_content)
                 if s_wc_c: 
                     st.image(s_wc_c.to_array(), use_container_width=True)
-                    st.markdown("---")
-                    # TOP 10
-                    s_counts = collections.Counter(s_words)
-                    s_top10 = s_counts.most_common(10)
-                    st.write("🔥 **校内TOP10热词:**")
-                    st.json(dict(s_top10))
-        
+                    if s_words:
+                        st.markdown("**🔥 TOP 10 热词:**")
+                        s_counts = collections.Counter(s_words)
+                        st.json(dict(s_counts.most_common(10)))
+
         with tab_s2:
-            st.dataframe(
-                sub_df[['title', '发布时间', '类型', 'digest']], 
-                use_container_width=True
-            )
+            # 布局优化：左侧列表，右侧正文
+            col_list, col_read = st.columns([1, 2])
             
-        with tab_s3:
-            # 阅读器
-            if 'content_html' in sub_df.columns:
-                read_idx = st.selectbox("选择文章阅读:", sub_df.index, format_func=lambda x: sub_df.loc[x, 'title'])
-                read_art = sub_df.loc[read_idx]
+            with col_list:
+                st.markdown("##### 文章列表")
+                # 使用 Selectbox 模拟点击进入
+                # 构造一个显示用的 Label
+                sub_df['label'] = sub_df.apply(lambda x: f"{x['发布日期']} | {x['title']}", axis=1)
                 
-                with st.container(border=True):
-                    st.markdown(f"### {read_art['title']}")
-                    st.caption(f"作者: {read_art['author']} | 时间: {read_art['发布时间']}")
-                    st.components.v1.html(read_art['content_html'], height=800, scrolling=True)
-            else:
-                st.warning("无正文数据")
+                selected_article_label = st.radio(
+                    "点击选择文章阅读:",
+                    sub_df['label'].tolist(),
+                    label_visibility="collapsed"
+                )
+            
+            with col_read:
+                if selected_article_label:
+                    # 找到对应的文章
+                    read_art = sub_df[sub_df['label'] == selected_article_label].iloc[0]
+                    
+                    st.markdown(f"#### {read_art['title']}")
+                    st.caption(f"✍️ {read_art['author']}  |  🕒 {read_art['发布时间']}")
+                    st.divider()
+                    
+                    if 'content_html' in read_art and read_art['content_html']:
+                        st.components.v1.html(read_art['content_html'], height=800, scrolling=True)
+                    else:
+                        st.warning("正文内容为空")
+
 else:
-    st.info("👈 请在左侧侧边栏进行操作：扫码 -> 输入高校名称 -> 开始分析")
+    st.info("👈 请在左侧侧边栏操作：扫码 -> 输入公众号 -> 开始分析")
