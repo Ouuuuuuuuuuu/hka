@@ -3,3 +3,6 @@ pandas
 requests
 beautifulsoup4
 playwright
+jieba
+wordcloud
+matplotlib
