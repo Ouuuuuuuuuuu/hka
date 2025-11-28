@@ -12,29 +12,28 @@ st.sidebar.info(f"当前工作目录: {os.getcwd()}") # 调试用，方便查看
 app_mode = st.sidebar.radio(
     "请选择功能模块:",
     [
-        "📊 师资效能评估 (DeepSeek)", 
+        "📊 师资效能评估", 
         "📝 校长文章库生成器",
         "🔥 公众号热点分析 (hka.py)"
     ]
 )
 
-# --- 模块 1: 师资效能评估 (HTML) ---
-if app_mode == "📊 师资效能评估 (DeepSeek)":
-    try:
-        with open("dashboard.html", "r", encoding="utf-8") as f:
-            html_content = f.read()
-        
-        # 注入 API Key
-        if "SILICONFLOW_API_KEY" in st.secrets:
-            api_key = st.secrets["SILICONFLOW_API_KEY"]
-            html_content = html_content.replace("[[SILICONFLOW_KEY]]", api_key)
-        else:
-            st.warning("⚠️ 未检测到 API Key，请在 Secrets 中配置 SILICONFLOW_API_KEY。")
-
-        components.html(html_content, height=1000, scrolling=True)
-        
-    except FileNotFoundError:
-        st.error("❌ 找不到 dashboard.html。请确保文件已上传。")
+# --- 模块 1: 师资效能评估 (Python) ---
+if app_mode == "📊 师资效能评估":
+    # 这里改为运行 "师资效能评估壳子.py"
+    # 请确保该文件已上传，且如果在其中使用 HTML 组件，可直接使用 st.secrets 读取 Key
+    
+    script_file = "师资效能评估壳子.py"
+    
+    if os.path.exists(script_file):
+        try:
+            with open(script_file, "r", encoding="utf-8") as f:
+                code = f.read()
+                exec(code, globals())
+        except Exception as e:
+            st.error(f"❌ 运行 {script_file} 时发生错误:\n{e}")
+    else:
+        st.warning(f"⚠️ 找不到 {script_file}。请确保文件已上传到仓库。")
 
 # --- 模块 2: 文章库生成器 (HTML) ---
 elif app_mode == "📝 校长文章库生成器":
@@ -52,13 +51,11 @@ elif app_mode == "📝 校长文章库生成器":
 # --- 模块 3: 公众号热点分析 (Python) ---
 elif app_mode == "🔥 公众号热点分析 (hka.py)":
     # 这里直接运行 hka.py 的代码
-    # 优点：hka.py 可以像独立应用一样编写，不需要为了合并而大量改代码
     
     hka_file = "hka.py"
     
     if os.path.exists(hka_file):
         try:
-            # 这是一个在当前环境中执行另一个 Python 文件的技巧
             with open(hka_file, "r", encoding="utf-8") as f:
                 code = f.read()
                 exec(code, globals())
