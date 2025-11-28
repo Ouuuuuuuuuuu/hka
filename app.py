@@ -102,21 +102,21 @@ if selection == PAGES["home"]:
     with col1:
         # 修复对齐：将 st.info 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.info("📊 **师资效能评估**\n\nDeepSeek 驱动的师资结构诊断与模拟沙盘。")
+        st.info("📊 **师资效能评估**\n\nDeepSeek—R1 驱动的师资结构诊断与模拟沙盘。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("进入评估系统", use_container_width=True, on_click=switch_page, args=(PAGES["eval"],))
 
     with col2:
         # 修复对齐：将 st.success 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.success("📝 **文章库生成器**\n\nWord 批量转网页工具，纯前端处理，安全高效。")
+        st.success("📝 **校长文章库生成器**\n\nWord 批量转网页工具，纯前端处理，安全高效。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("打开生成工具", use_container_width=True, on_click=switch_page, args=(PAGES["article"],))
 
     with col3:
         # 修复对齐：将 st.warning 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.warning("🔥 **公众号热点分析**\n\n基于 Python 的公众号数据可视化与词云分析。")
+        st.warning("🔥 **公众号热点分析**\n\n基于 Kimi-K2 的公众号数据可视化与词云分析。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("开始热点分析", use_container_width=True, on_click=switch_page, args=(PAGES["hotspot"],))
 
