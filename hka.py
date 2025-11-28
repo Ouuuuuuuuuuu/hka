@@ -3,32 +3,14 @@ import pandas as pd
 import requests
 import time
 import random
-import plotly.express as px
 import datetime
 from bs4 import BeautifulSoup
-from collections import Counter
-import jieba.analyse
-import platform
 import os
+from urllib.parse import urlparse, parse_qs
 import shutil
-import glob
 
-# --- Selenium 相关库 ---
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.edge.service import Service as EdgeService
-from selenium.webdriver.firefox.service import Service as FirefoxService
-
-# 引入 webdriver_manager
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
-from webdriver_manager.firefox import GeckoDriverManager
-
-# ==========================================
-# 🚀 配置国内镜像源
-# ==========================================
-os.environ['WDM_BASE_URL'] = "https://npmmirror.com/mirrors/chromedriver"
-os.environ['WDM_SSL_VERIFY'] = '0' 
+# --- 新增：Playwright 库 ---
+from playwright.sync_api import sync_playwright
 
 # --- 页面配置 ---
 st.set_page_config(
@@ -38,96 +20,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 辅助函数：智能查找本地驱动 ---
-def find_local_driver(browser_name):
-    """
-    全盘扫描：在 Downloads 文件夹和系统路径中查找驱动文件
-    """
-    system_name = platform.system()
-    driver_filename = "chromedriver" if browser_name == "Chrome" else "msedgedriver"
-    if system_name == "Windows":
-        driver_filename += ".exe"
-
-    # 1. 检查当前目录
-    if os.path.exists(driver_filename):
-        return os.path.abspath(driver_filename)
-    
-    # 2. 检查 Downloads 目录
-    home = os.path.expanduser("~")
-    downloads_path = os.path.join(home, "Downloads")
-    target = os.path.join(downloads_path, driver_filename)
-    if os.path.exists(target):
-        return target
-        
-    # 3. 检查系统 PATH
-    return shutil.which(driver_filename)
-
-# --- 核心逻辑：初始化浏览器驱动 ---
-# 将此逻辑独立出来，避免主函数出现 SyntaxError
-def init_driver_engine(browser_type):
-    driver = None
-    err_msg = ""
-    
-    try:
-        # === Safari 策略 (Mac专用) ===
-        if browser_type == "Safari":
-            if platform.system() != 'Darwin':
-                return None, "Safari 仅支持 macOS 系统。"
-            try:
-                options = webdriver.SafariOptions()
-                driver = webdriver.Safari(options=options)
-                return driver, ""
-            except Exception as e:
-                return None, f"Safari 启动失败: {str(e)}。请确保在 Safari 菜单栏 -> 开发 -> 勾选 '允许远程自动化'。"
-
-        # === Chrome 策略 ===
-        elif browser_type == "Chrome":
-            options = webdriver.ChromeOptions()
-            # 策略A: 自动下载 (国内镜像)
-            try:
-                service = ChromeService(ChromeDriverManager().install())
-                driver = webdriver.Chrome(service=service, options=options)
-                return driver, ""
-            except Exception:
-                # 策略B: 查找本地
-                local_path = find_local_driver("Chrome")
-                if local_path:
-                    st.toast(f"已调用本地驱动: {local_path}", icon="📂")
-                    service = ChromeService(executable_path=local_path)
-                    driver = webdriver.Chrome(service=service, options=options)
-                    return driver, ""
-                else:
-                    return None, "Chrome 驱动下载失败且未找到本地文件。"
-
-        # === Edge 策略 ===
-        elif browser_type == "Edge":
-            options = webdriver.EdgeOptions()
-            # 策略A: 查找本地 (优先)
-            local_path = find_local_driver("Edge")
-            if local_path:
-                st.toast(f"已调用本地驱动: {local_path}", icon="📂")
-                try:
-                    service = EdgeService(executable_path=local_path)
-                    driver = webdriver.Edge(service=service, options=options)
-                    return driver, ""
-                except Exception as e:
-                    # 如果本地驱动版本不匹配，尝试自动下载
-                    pass 
-
-            # 策略B: 自动下载
-            try:
-                service = EdgeService(EdgeChromiumDriverManager().install())
-                driver = webdriver.Edge(service=service, options=options)
-                return driver, ""
-            except Exception as e:
-                return None, f"Edge 驱动启动失败: {str(e)}。请手动下载驱动放入 Downloads 文件夹。"
-
-    except Exception as e:
-        return None, f"未知错误: {str(e)}"
-    
-    return None, "不支持的浏览器类型"
-
-# --- 核心爬虫逻辑类 ---
+# --- 核心爬虫逻辑 (负责抓取数据) ---
 class WechatCrawler:
     def __init__(self, token, cookie):
         self.base_url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
@@ -140,6 +33,7 @@ class WechatCrawler:
         self.session.headers.update(self.headers)
 
     def search_account(self, query):
+        """搜索公众号获取fakeid"""
         search_url = "https://mp.weixin.qq.com/cgi-bin/searchbiz"
         params = {
             "action": "search_biz", "token": self.token, "lang": "zh_CN",
@@ -148,11 +42,17 @@ class WechatCrawler:
         try:
             res = self.session.get(search_url, params=params)
             data = res.json()
+            # 检查是否有权限错误
+            if "base_resp" in data and data["base_resp"]["ret"] != 0:
+                st.error(f"微信接口报错: {data['base_resp']}")
+                return []
             return data.get("list", [])
         except Exception as e:
+            st.error(f"搜索请求异常: {e}")
             return []
 
     def fetch_article_list(self, fakeid, pages=3):
+        """获取文章列表元数据"""
         all_articles = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -191,6 +91,7 @@ class WechatCrawler:
         return all_articles
 
     def fetch_article_content(self, url):
+        """深度采集：访问详情页获取正文"""
         try:
             res = self.session.get(url, timeout=10)
             soup = BeautifulSoup(res.text, "lxml")
@@ -238,68 +139,71 @@ def process_data(articles, crawler=None, fetch_details=False):
         df['author'] = "未采集"
     return df
 
-# --- 主交互函数：扫码获取凭证 ---
-def auto_login_get_cookie(browser_type):
+# --- 核心：Playwright 自动登录逻辑 ---
+def auto_login_playwright():
+    """
+    使用 Playwright 启动浏览器并监听登录状态
+    """
     status_placeholder = st.empty()
-    status_placeholder.info(f"🚀 正在启动 {browser_type}，请稍候...")
-    
-    # 1. 启动浏览器
-    driver, error = init_driver_engine(browser_type)
-    
-    if not driver:
-        status_placeholder.error(error)
-        return None, None
+    token = None
+    cookie_string = None
     
     try:
-        # 2. 打开微信
-        driver.get("https://mp.weixin.qq.com/")
-        status_placeholder.success("✅ 浏览器已就绪！请在弹出的窗口中扫码登录...")
+        status_placeholder.info("🚀 正在启动 Chromium 浏览器...")
         
-        # 3. 循环检测登录
-        max_wait = 180
-        start_time = time.time()
-        
-        while True:
-            # 检查超时
-            if time.time() - start_time > max_wait:
-                status_placeholder.error("⏰ 登录超时，请重试")
-                break
-                
-            # 检查浏览器是否被用户关闭
-            try:
-                current_url = driver.current_url
-            except:
-                status_placeholder.warning("⚠️ 浏览器已关闭")
-                return None, None
+        with sync_playwright() as p:
+            # 1. 启动浏览器 (headless=False 以便看到界面扫码)
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context()
+            page = context.new_page()
 
-            # 检查是否包含 token (登录成功标志)
-            if "token=" in current_url:
-                status_placeholder.success("🎉 扫码成功！正在提取凭证...")
-                try:
-                    token = current_url.split("token=")[1].split("&")[0]
-                except:
-                    token = ""
-                
-                selenium_cookies = driver.get_cookies()
-                cookie_items = [f"{c['name']}={c['value']}" for c in selenium_cookies]
-                cookies_str = "; ".join(cookie_items)
-                
-                driver.quit()
-                return token, cookies_str
+            status_placeholder.info("🔗 正在打开微信登录页...")
+            page.goto("https://mp.weixin.qq.com/")
             
-            time.sleep(1)
+            status_placeholder.warning("📱 请拿起手机微信扫码登录 (请勿关闭浏览器)...")
+
+            # 2. 循环检测 URL Token
+            max_retries = 120  # 等待 120 秒
+            for i in range(max_retries):
+                # 检查浏览器是否被手动关闭
+                if page.is_closed():
+                    status_placeholder.error("浏览器已关闭，操作取消。")
+                    return None, None
+                    
+                current_url = page.url
+                if "token=" in current_url:
+                    status_placeholder.success(f"✅ 登录成功！正在提取凭证... ({i}s)")
+                    
+                    # A. 提取 Token
+                    parsed_url = urlparse(current_url)
+                    params = parse_qs(parsed_url.query)
+                    token = params.get("token", [""])[0]
+                    
+                    # B. 提取 Cookies
+                    cookies_list = context.cookies()
+                    cookie_string = "; ".join([f"{cookie['name']}={cookie['value']}" for cookie in cookies_list])
+                    
+                    # 稍等片刻确保数据稳定
+                    time.sleep(1)
+                    break
+                else:
+                    time.sleep(1)
+            
+            if not token:
+                status_placeholder.error("⏰ 登录超时，请重试。")
+            
+            browser.close()
             
     except Exception as e:
-        status_placeholder.error(f"运行时发生错误: {str(e)}")
-        if driver:
-            try: driver.quit() 
-            except: pass
+        status_placeholder.error(f"Playwright 启动失败: {str(e)}")
+        st.markdown("💡 **提示**: 第一次使用请确保已运行命令安装浏览器内核:\n`playwright install`")
         return None, None
         
-    return None, None
+    return token, cookie_string
 
 # --- 主程序 UI 逻辑 ---
 
+# 初始化 session state
 if 'wx_token' not in st.session_state:
     st.session_state['wx_token'] = ''
 if 'wx_cookie' not in st.session_state:
@@ -307,29 +211,34 @@ if 'wx_cookie' not in st.session_state:
 
 with st.sidebar:
     st.title("🤖 自动获取助手")
-    
-    # 智能默认选择
-    default_idx = 0 if platform.system() == 'Darwin' else 2 # Mac默认Safari, Win默认Edge
-    browser_choice = st.selectbox("选择浏览器", ["Safari", "Chrome", "Edge"], index=default_idx)
-    
-    if browser_choice == "Safari":
-        st.caption("🍎 **Mac首选**：无需下载驱动。若失败请检查Safari菜单栏 `开发` -> `允许远程自动化`。")
-    elif browser_choice == "Edge":
-        st.caption("⚡️ **自动搜索**：将下载好的驱动放在 Downloads 文件夹，我会自动找到它。")
+    st.caption("基于 Playwright (Chromium)")
 
-    if st.button("📢 一键唤起扫码", type="primary"):
-        token, cookie = auto_login_get_cookie(browser_choice)
+    # 自动获取按钮
+    if st.button("📢 唤起浏览器扫码", type="primary"):
+        token, cookie = auto_login_playwright()
         if token and cookie:
             st.session_state['wx_token'] = token
             st.session_state['wx_cookie'] = cookie
             st.balloons()
             st.success("凭证已自动填入！")
+            
+            # 自动备份到桌面 (可选)
+            try:
+                home = os.path.expanduser("~")
+                save_dir = os.path.join(home, "Desktop", "finance")
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir)
+                with open(os.path.join(save_dir, "weixin_config_backup.txt"), "w") as f:
+                    f.write(f"Token:\n{token}\n\nCookie:\n{cookie}")
+            except:
+                pass 
+                
             time.sleep(1)
             st.rerun()
     
     st.divider()
     
-    with st.expander("🔑 凭证配置 (手动)", expanded=True):
+    with st.expander("🔑 凭证配置", expanded=True):
         wx_token = st.text_input("Token", value=st.session_state['wx_token'])
         wx_cookie = st.text_area("Cookie", value=st.session_state['wx_cookie'], height=150)
     
@@ -348,7 +257,7 @@ if start_btn and wx_token and wx_cookie and target_query:
         status.write("🔍 定位目标账号...")
         accounts = crawler.search_account(target_query)
         if not accounts:
-            status.update(label="未找到账号，可能是Cookie已失效", state="error")
+            status.update(label="未找到账号，可能是Cookie已失效，请重新扫码", state="error")
             st.stop()
         
         target = accounts[0]
@@ -400,4 +309,4 @@ if 'data' in st.session_state:
             column_config={"link": st.column_config.LinkColumn("原文链接")}
         )
 else:
-    st.info("👈 请在左侧选择浏览器并点击 **'一键唤起扫码'**。")
+    st.info("👈 点击左侧 **'唤起浏览器扫码'** 开始。")
