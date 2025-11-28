@@ -9,18 +9,27 @@ from bs4 import BeautifulSoup
 from collections import Counter
 import jieba.analyse
 import platform
+import os
+import shutil
+import glob
 
 # --- 新增：自动化登录模块 (多浏览器支持) ---
 from selenium import webdriver
-# Chrome
 from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
-# Edge
 from selenium.webdriver.edge.service import Service as EdgeService
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
-# Firefox
 from selenium.webdriver.firefox.service import Service as FirefoxService
+
+# 引入 webdriver_manager
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
+
+# ==========================================
+# 🚀 核心黑科技：配置国内镜像源 (解决网络报错)
+# ==========================================
+# 强制让 Chrome 驱动从淘宝镜像下载，解决 "Could not reach host" 问题
+os.environ['WDM_BASE_URL'] = "https://npmmirror.com/mirrors/chromedriver"
+os.environ['WDM_SSL_VERIFY'] = '0' 
 
 # --- 页面配置 ---
 st.set_page_config(
@@ -29,6 +38,40 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- 智能驱动查找器 (专门解决小白找不到路径的问题) ---
+def find_driver_automatically(browser_name):
+    """
+    如果自动下载失败，这个函数会自动去电脑的 Downloads 文件夹
+    或者系统路径里“捡”一个驱动回来用。
+    """
+    system_name = platform.system()
+    driver_filename = ""
+    
+    if browser_name == "Chrome":
+        driver_filename = "chromedriver"
+    elif browser_name == "Edge":
+        driver_filename = "msedgedriver"
+    
+    if system_name == "Windows":
+        driver_filename += ".exe"
+
+    # 1. 搜索当前目录
+    if os.path.exists(driver_filename):
+        return os.path.abspath(driver_filename)
+    
+    # 2. 搜索用户的 Downloads 文件夹 (这是小白最容易存放的地方)
+    home = os.path.expanduser("~")
+    downloads_path = os.path.join(home, "Downloads")
+    
+    # 在 Downloads 里找 (包括子文件夹，防止解压在里面)
+    # 简单搜索 Downloads 根目录
+    target = os.path.join(downloads_path, driver_filename)
+    if os.path.exists(target):
+        return target
+        
+    # 3. 尝试从 PATH 环境变量里找
+    return shutil.which(driver_filename)
 
 # --- 核心爬虫逻辑 (保持不变) ---
 class WechatCrawler:
@@ -43,7 +86,6 @@ class WechatCrawler:
         self.session.headers.update(self.headers)
 
     def search_account(self, query):
-        """搜索公众号获取fakeid"""
         search_url = "https://mp.weixin.qq.com/cgi-bin/searchbiz"
         params = {
             "action": "search_biz", "token": self.token, "lang": "zh_CN",
@@ -58,7 +100,6 @@ class WechatCrawler:
             return []
 
     def fetch_article_list(self, fakeid, pages=3):
-        """获取文章列表元数据"""
         all_articles = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -97,7 +138,6 @@ class WechatCrawler:
         return all_articles
 
     def fetch_article_content(self, url):
-        """深度采集：访问详情页获取正文"""
         try:
             res = self.session.get(url, timeout=10)
             soup = BeautifulSoup(res.text, "lxml")
@@ -159,215 +199,67 @@ def process_data(articles, crawler=None, fetch_details=False):
 
     return df
 
-# --- 辅助函数：自动登录获取Cookie (多浏览器版) ---
+# --- 辅助函数：智能自动登录 ---
 def auto_login_get_cookie(browser_type="Chrome"):
     driver = None
     status_placeholder = st.empty()
     
     try:
-        status_placeholder.info(f"🚀 正在启动 {browser_type} 浏览器，请在弹出的窗口中扫码登录...")
+        status_placeholder.info(f"🚀 正在启动 {browser_type} 浏览器...")
         
-        # 根据选择初始化不同的浏览器驱动
+        # 1. 尝试初始化浏览器
         if browser_type == "Chrome":
+            options = webdriver.ChromeOptions()
             try:
-                options = webdriver.ChromeOptions()
+                # 尝试 A: 使用国内镜像自动下载
                 service = ChromeService(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=options)
-            except Exception as e:
-                st.error("无法下载 Chrome 驱动，请检查网络（可能需要VPN）。推荐使用下方的【方法二：手动复制】。")
-                return None, None
+            except Exception as e_net:
+                # 尝试 B: 自动查找本地是否存在驱动 (Downloads文件夹等)
+                local_path = find_driver_automatically("Chrome")
+                if local_path:
+                    st.toast(f"✅ 在本地发现了驱动：{local_path}", icon="📂")
+                    service = ChromeService(executable_path=local_path)
+                    driver = webdriver.Chrome(service=service, options=options)
+                else:
+                    raise e_net
             
         elif browser_type == "Edge":
+            options = webdriver.EdgeOptions()
             try:
-                options = webdriver.EdgeOptions()
+                # 尝试 A: 自动下载 (可能被墙)
                 service = EdgeService(EdgeChromiumDriverManager().install())
                 driver = webdriver.Edge(service=service, options=options)
-            except Exception as e:
-                st.error("无法下载 Edge 驱动，请检查网络（可能需要VPN）。推荐使用下方的【方法二：手动复制】。")
-                return None, None
-            
-        elif browser_type == "Firefox":
-            try:
-                options = webdriver.FirefoxOptions()
-                service = FirefoxService(GeckoDriverManager().install())
-                driver = webdriver.Firefox(service=service, options=options)
-            except Exception as e:
-                st.error("无法下载 Firefox 驱动。推荐使用下方的【方法二：手动复制】。")
-                return None, None
+            except Exception as e_net:
+                # 尝试 B: 自动查找本地
+                local_path = find_driver_automatically("Edge")
+                if local_path:
+                    st.toast(f"✅ 在本地发现了驱动：{local_path}", icon="📂")
+                    service = EdgeService(executable_path=local_path)
+                    driver = webdriver.Edge(service=service, options=options)
+                else:
+                    # 尝试 C: 不指定Service，让Selenium 4.x自己尝试寻找
+                    try:
+                        driver = webdriver.Edge(options=options)
+                    except:
+                        raise e_net
             
         elif browser_type == "Safari":
-            # 移除严格的系统检测，因为某些环境可能误报
-            # 注意：需在 Safari 菜单 -> 开发 -> 允许远程自动化 (Allow Remote Automation)
-            options = webdriver.SafariOptions()
+            # Safari 是 Mac 原生，最稳定，无须下载
+            if platform.system() != 'Darwin':
+                st.error("Safari 仅支持 Mac 系统")
+                return None, None
             try:
+                options = webdriver.SafariOptions()
                 driver = webdriver.Safari(options=options)
             except Exception as e:
-                st.error("启动 Safari 失败。请确认：1.使用macOS 2.Safari菜单栏【开发】->勾选【允许远程自动化】。")
+                st.error("启动 Safari 失败。请检查：屏幕左上角 Safari -> 偏好设置 -> 高级 -> 勾选'在菜单栏中显示开发菜单' -> 菜单栏'开发' -> 勾选'允许远程自动化'。")
                 return None, None
             
-        # 打开微信公众平台
+        # 2. 打开微信
         driver.get("https://mp.weixin.qq.com/")
+        status_placeholder.success("✅ 浏览器启动成功！请在弹出的窗口中扫码...")
         
-        # 循环检测是否登录成功
+        # 3. 循环检测登录
         max_wait = 180
-        start_time = time.time()
-        
-        token = ""
-        cookies_str = ""
-        
-        while True:
-            # 捕获浏览器可能被手动关闭的异常
-            try:
-                current_url = driver.current_url
-            except:
-                status_placeholder.warning("浏览器已关闭，操作终止。")
-                return None, None
-
-            if "token=" in current_url:
-                status_placeholder.success("✅ 扫码成功！正在提取凭证...")
-                try:
-                    token = current_url.split("token=")[1].split("&")[0]
-                except:
-                    pass
-                
-                selenium_cookies = driver.get_cookies()
-                cookie_items = [f"{c['name']}={c['value']}" for c in selenium_cookies]
-                cookies_str = "; ".join(cookie_items)
-                break
-            
-            if time.time() - start_time > max_wait:
-                status_placeholder.error("⏰ 登录超时，请重试")
-                break
-            
-            time.sleep(1)
-        
-        driver.quit()
-        status_placeholder.empty()
-        return token, cookies_str
-        
-    except Exception as e:
-        st.error(f"自动化启动失败: {str(e)}")
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        return None, None
-
-# --- 主程序逻辑 ---
-
-if 'wx_token' not in st.session_state:
-    st.session_state['wx_token'] = ''
-if 'wx_cookie' not in st.session_state:
-    st.session_state['wx_cookie'] = ''
-
-with st.sidebar:
-    st.title("🤖 自动获取助手")
-    
-    tab_auto, tab_manual = st.tabs(["⚡️ 方法一：自动唤起", "🛠️ 方法二：手动复制"])
-    
-    with tab_auto:
-        # 浏览器选择
-        browser_choice = st.selectbox(
-            "选择浏览器", 
-            ["Edge", "Safari", "Chrome", "Firefox"],
-            help="Safari 需在菜单栏开启'允许远程自动化'；其他浏览器第一次运行时会自动下载驱动。"
-        )
-        
-        st.markdown("💡 **温馨提示**：第一次用？[下载Edge驱动](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/?form=MA13LH#downloads)")
-        
-        # 自动获取按钮
-        if st.button("📢 唤起浏览器扫码", type="primary"):
-            token, cookie = auto_login_get_cookie(browser_choice)
-            if token and cookie:
-                st.session_state['wx_token'] = token
-                st.session_state['wx_cookie'] = cookie
-                st.success("凭证已自动填入！")
-                time.sleep(1)
-                st.rerun()
-
-    with tab_manual:
-        st.markdown("""
-        **如果自动唤起失败（通常是网络原因），请尝试此法：**
-        1. 在你自己常用的浏览器打开 [微信后台](https://mp.weixin.qq.com)。
-        2. 登录后，按 `F12` 打开控制台 (Console)。
-        3. **复制并运行**下方代码：
-        """)
-        st.code("copy('Token: ' + new URLSearchParams(location.search).get('token') + '\\nCookie: ' + document.cookie)", language="javascript")
-        st.caption("运行后，Token和Cookie会自动复制到你的剪贴板，直接粘贴到下方即可。")
-    
-    st.divider()
-    
-    with st.expander("🔑 凭证配置", expanded=True):
-        wx_token = st.text_input("Token", value=st.session_state['wx_token'])
-        wx_cookie = st.text_area("Cookie", value=st.session_state['wx_cookie'], height=150)
-    
-    st.divider()
-    target_query = st.text_input("🔍 目标公众号", placeholder="输入名称")
-    scrape_pages = st.number_input("抓取页数", 1, 10, 2)
-    enable_details = st.checkbox("采集正文 (阅读模式必选)", value=True)
-    
-    start_btn = st.button("🚀 开始分析数据", use_container_width=True)
-
-# --- 主界面 (保持不变) ---
-if start_btn and wx_token and wx_cookie and target_query:
-    crawler = WechatCrawler(wx_token, wx_cookie)
-    
-    with st.status("正在建立数据连接...", expanded=True) as status:
-        status.write("🔍 定位目标账号...")
-        accounts = crawler.search_account(target_query)
-        if not accounts:
-            status.update(label="未找到账号，可能是Cookie已失效，请重新扫码", state="error")
-            st.stop()
-        
-        target = accounts[0]
-        status.write(f"✅ 锁定: {target['nickname']}")
-        
-        status.write("📃 拉取文章列表...")
-        raw_list = crawler.fetch_article_list(target['fakeid'], pages=scrape_pages)
-        
-        if not raw_list:
-             status.update(label="未获取到文章列表，请检查凭证", state="error")
-             st.stop()
-
-        status.write("🧹 深度采集正文内容...")
-        df_res = process_data(raw_list, crawler, fetch_details=enable_details)
-        
-        status.update(label="数据准备就绪!", state="complete")
-        
-        st.session_state['data'] = df_res
-        st.session_state['account'] = target['nickname']
-
-if 'data' in st.session_state:
-    df = st.session_state['data']
-    nickname = st.session_state['account']
-    st.header(f"📰 {nickname} · 深度阅读看板")
-    
-    tab_read, tab_list = st.tabs(["👓 阅读模式", "📋 文章列表"])
-    
-    with tab_read:
-        if 'content' in df.columns and not df['content'].isna().all():
-            df['select_label'] = df['date'].astype(str) + " | " + df['title']
-            selected_article_label = st.selectbox("选择文章:", df['select_label'].tolist())
-            article = df[df['select_label'] == selected_article_label].iloc[0]
-            
-            with st.container():
-                st.markdown(f"## {article['title']}")
-                st.caption(f"作者: {article['author']} | 发布时间: {article['publish_time']} | {article['is_original']} | IP: {article['ip_location']}")
-                st.divider()
-                if article['content']:
-                    st.markdown(article['content'].replace("\n", "\n\n"))
-                else:
-                    st.warning("正文内容为空或未采集")
-                    st.markdown(f"[点击跳转原文链接]({article['link']})")
-        else:
-            st.info("暂无正文数据，请确保勾选了【采集正文】并重新抓取。")
-            
-    with tab_list:
-        st.dataframe(
-            df[['title', 'date', 'author', 'is_original', 'link']],
-            use_container_width=True,
-            column_config={"link": st.column_config.LinkColumn("原文链接")}
-        )
-else:
-    st.info("👈 请在左侧选择浏览器并点击 **'唤起浏览器扫码'**。")
+        start_time
