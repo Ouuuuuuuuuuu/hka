@@ -215,13 +215,12 @@ def generate_wordcloud_img(text_data, exclude_words=None):
         return None, []
 
 # ==========================================
-# AI 分析模块 (SiliconFlow)
+# AI 分析模块 (Stream 流式版)
 # ==========================================
 
-def call_ai_analysis(data_payload, mode="global"):
+def call_ai_analysis_stream(data_payload, reasoning_placeholder, report_placeholder, mode="global"):
     """
-    调用 SiliconFlow API 进行 AI 分析
-    mode: "global" (全网对比) or "single" (单号分析)
+    调用 SiliconFlow API 进行 AI 分析 (流式输出)
     """
     api_key = st.secrets.get("SILICONFLOW_API_KEY", "sk-lezqyzzxlcnarawzhmyddltuclijckeufnzzktmkizfslcje")
     
@@ -231,6 +230,7 @@ def call_ai_analysis(data_payload, mode="global"):
         "Content-Type": "application/json"
     }
     
+    # 提示词保持不变
     if mode == "global":
         system_prompt = """你是一位资深的教育行业新媒体数据分析专家。
 用户将提供一份JSON格式的汇总数据，包含多个公众号在近期的发文统计、标题列表及提取的高频热词。
@@ -263,25 +263,56 @@ def call_ai_analysis(data_payload, mode="global"):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"这是数据：\n{data_json}"}
         ],
-        "stream": False,
+        "stream": True, # 开启流式
         "temperature": 0.7
     }
     
+    # 累计变量
+    full_reasoning = ""
+    full_content = ""
+    
     try:
-        # timeout 设置为 300秒 (5分钟)，防止推理模型超时
-        response = requests.post(url, headers=headers, json=payload, timeout=300)
-        if response.status_code == 200:
-            res_json = response.json()
-            choice = res_json.get('choices', [{}])[0]
-            message = choice.get('message', {})
-            content = message.get('content', '')
-            # 兼容不同模型的 reasoning 字段位置
-            reasoning = message.get('reasoning_content', '') 
-            return True, content, reasoning
-        else:
-            return False, f"API 请求失败: {response.status_code} - {response.text}", ""
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=300) as response:
+            if response.status_code != 200:
+                return False, f"API Error: {response.status_code} - {response.text}", ""
+                
+            # 处理流式响应
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8')
+                    if decoded_line.startswith("data: "):
+                        json_str = decoded_line[6:]
+                        if json_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(json_str)
+                            delta = chunk['choices'][0]['delta']
+                            
+                            # 1. 捕捉思考过程 (Reasoning)
+                            if 'reasoning_content' in delta and delta['reasoning_content']:
+                                content_piece = delta['reasoning_content']
+                                full_reasoning += content_piece
+                                # 实时更新思考框
+                                reasoning_placeholder.info(f"**🧠 AI 正在深度思考...**\n\n{full_reasoning}▌")
+                            
+                            # 2. 捕捉正文内容 (Content)
+                            if 'content' in delta and delta['content']:
+                                content_piece = delta['content']
+                                full_content += content_piece
+                                # 思考完成后，思考框显示完整内容（去掉光标），开始更新正文
+                                reasoning_placeholder.info(f"**🧠 思考完成**\n\n{full_reasoning}") 
+                                report_placeholder.markdown(full_content + "▌")
+                                
+                        except Exception as e:
+                            continue
+                            
+        # 最终清理光标
+        reasoning_placeholder.info(f"**🧠 思考完成**\n\n{full_reasoning}")
+        report_placeholder.markdown(full_content)
+        return True, full_content, full_reasoning
+
     except Exception as e:
-        return False, f"发生错误: {str(e)}", ""
+        return False, f"Request Failed: {str(e)}", ""
 
 def prepare_global_ai_data(df):
     """准备全网分析的数据"""
@@ -711,31 +742,30 @@ if st.session_state['all_data'] is not None:
         date_counts = df.groupby('发布日期').size()
         st.line_chart(date_counts)
 
-    # --- 全网 AI 分析 ---
+    # --- 全网 AI 分析 (修改版) ---
     with tab_ai:
         st.subheader("🤖 Kimi-K2-Thinking 深度热点报告 (全网版)")
         st.info("AI 将对比分析所有抓取的公众号数据。")
         
         if st.button("🧠 开始全网 AI 分析", type="primary", key="btn_global_ai"):
-            with st.spinner("AI 正在深度思考中 (这可能需要几分钟，请耐心等待)..."):
-                ai_data = prepare_global_ai_data(df)
-                success, report, reasoning = call_ai_analysis(ai_data, mode="global")
+            # 1. 准备布局：上方思考区，下方报告区
+            st.markdown("### 🧠 深度思考中...")
+            reasoning_container = st.empty()  # 思考过程容器
             
-            if success:
-                st.success("分析完成！")
-                
-                # --- 新增：分栏展示思考过程与报告 ---
-                res_tab1, res_tab2 = st.tabs(["📝 分析报告", "🧠 思考过程"])
-                
-                with res_tab1:
-                    st.markdown(report)
-                
-                with res_tab2:
-                    if reasoning:
-                        st.markdown(reasoning)
-                    else:
-                        st.info("模型未返回思考过程")
-            else:
+            st.markdown("### 📝 分析报告")
+            report_container = st.empty()     # 正文报告容器
+            
+            ai_data = prepare_global_ai_data(df)
+            
+            # 2. 调用流式分析
+            success, report, reasoning = call_ai_analysis_stream(
+                ai_data, 
+                reasoning_container, 
+                report_container, 
+                mode="global"
+            )
+            
+            if not success:
                 st.error(report)
 
     st.markdown("---")
@@ -822,25 +852,24 @@ if st.session_state['all_data'] is not None:
         with tab_s3:
             st.subheader(f"🧠 {selected_account} - 运营诊断报告")
             if st.button("开始单号诊断", type="primary", key=f"btn_single_{selected_account}"):
-                with st.spinner("AI 正在诊断该账号 (请稍候)..."):
-                    single_ai_data = prepare_single_ai_data(df, selected_account)
-                    success, report, reasoning = call_ai_analysis(single_ai_data, mode="single")
+                # 1. 准备布局
+                st.markdown("### 🧠 深度思考中...")
+                s_reasoning_container = st.empty()
                 
-                if success:
-                    st.success("诊断完成！")
-                    
-                    # --- 新增：分栏展示思考过程与报告 ---
-                    single_res_tab1, single_res_tab2 = st.tabs(["📝 诊断报告", "🧠 思考过程"])
-                    
-                    with single_res_tab1:
-                        st.markdown(report)
-                    
-                    with single_res_tab2:
-                        if reasoning:
-                            st.markdown(reasoning)
-                        else:
-                            st.info("模型未返回思考过程")
-                else:
+                st.markdown("### 📝 诊断报告")
+                s_report_container = st.empty()
+                
+                single_ai_data = prepare_single_ai_data(df, selected_account)
+                
+                # 2. 调用流式分析
+                success, report, reasoning = call_ai_analysis_stream(
+                    single_ai_data, 
+                    s_reasoning_container, 
+                    s_report_container, 
+                    mode="single"
+                )
+                
+                if not success:
                     st.error(report)
 
 else:
