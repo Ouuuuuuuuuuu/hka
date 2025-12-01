@@ -10,9 +10,12 @@ import io
 # ==============================================================================
 st.set_page_config(layout="wide", page_title="HKA 师资效能评估 AI版")
 
-# 优先从 Secrets 读取 Key，如果没有配置，则使用代码中预设的 Key (方便直接运行)
-DEFAULT_KEY = "sk-lezqyzzxlcnarawzhmyddltuclijckeufnzzktmkizfslcje"
-API_KEY = st.secrets.get("SILICONFLOW_API_KEY", DEFAULT_KEY)
+# 强制从 Secrets 读取 Key，如果没有配置则直接报错，绝不妥协
+try:
+    API_KEY = st.secrets["SILICONFLOW_API_KEY"]
+except Exception:
+    st.error("❌ 严重错误：未检测到 SILICONFLOW_API_KEY，系统无法运行。请在 .streamlit/secrets.toml 中配置正确的 Key。")
+    st.stop()
 
 # ==============================================================================
 # 2. AI 智能解析引擎 (Python 后端处理)
