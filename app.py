@@ -93,7 +93,7 @@ if selection == PAGES["home"]:
 
     with col1:
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.info("📊 **师资效能评估**\n\nDeepSeek—R1 驱动的师资结构诊断。")
+        st.info("📊 **师资效能评估（升级维护中）**\n\nDeepSeek—R1 驱动的师资结构诊断。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("进入评估系统", use_container_width=True, on_click=switch_page, args=(PAGES["eval"],))
 
