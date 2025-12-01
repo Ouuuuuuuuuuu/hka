@@ -6,3 +6,4 @@ playwright
 jieba
 wordcloud
 matplotlib
+openpyxl
