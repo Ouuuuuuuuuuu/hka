@@ -2,13 +2,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 import os
 
-# 1. 设置页面基本配置 (必须是第一个 Streamlit 命令)
+# 1. 设置页面基本配置
 st.set_page_config(layout="wide", page_title="HKA 综合工具箱")
 
-# 2. 自定义 CSS 样式：美化标题、卡片和底部 Footer
+# 2. 自定义 CSS (保持不变)
 st.markdown("""
     <style>
-    /* 大标题样式 */
     .main-title {
         font-size: 3.5rem !important;
         font-weight: 700 !important;
@@ -24,7 +23,6 @@ st.markdown("""
         text-align: center;
         margin-bottom: 4rem;
     }
-    /* 底部 Footer 样式 */
     .footer {
         position: fixed;
         left: 0;
@@ -38,14 +36,12 @@ st.markdown("""
         border-top: 1px solid #e2e8f0;
         z-index: 999;
     }
-    /* 强制信息块固定高度，解决按钮不对齐问题 */
     .fixed-height-box {
-        min-height: 120px; /* 设定一个足够容纳所有文本的固定高度 */
+        min-height: 120px;
         display: flex;
         flex-direction: column;
         justify-content: flex-start;
     }
-    /* 调整按钮样式使其更像卡片 (可选，Streamlit 原生按钮较难完全定制，这里主要靠布局) */
     div.stButton > button {
         width: 100%;
         height: 3rem;
@@ -55,29 +51,28 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 3. 状态管理：确保 session_state 中有当前页面的记录和待跳转页面的记录
+# 3. 状态管理
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "🏠 首页"
 if 'pending_page' not in st.session_state:
     st.session_state.pending_page = None
 
-# 定义页面列表
+# 定义页面列表 (更新了最后一个栏目)
 PAGES = {
     "home": "🏠 首页",
     "eval": "📊 师资效能评估",
     "article": "📝 校长文章库生成器",
-    "hotspot": "🔥 公众号热点分析"
+    "hotspot": "🔥 公众号热点分析",
+    "whimsy": "💡 奇思妙想"  # <--- 新增栏目
 }
 
-# 解决状态冲突的核心逻辑：
-# 如果 pending_page 有值，说明用户点击了首页按钮，我们用它的值覆盖 current_page，然后清空 pending_page
+# 解决状态冲突
 if st.session_state.pending_page:
     st.session_state.current_page = st.session_state.pending_page
-    st.session_state.pending_page = None # 清空，避免无限循环
+    st.session_state.pending_page = None
 
 # 4. 侧边栏导航
-st.sidebar.title("漢開工具箱") # 漢開
-# 使用 session_state.current_page 来同步选择状态
+st.sidebar.title("漢開工具箱")
 selection = st.sidebar.radio(
     "功能导航:",
     list(PAGES.values()),
@@ -86,45 +81,44 @@ selection = st.sidebar.radio(
 
 # 5. 页面路由逻辑
 
-# --- 🏠 首页 (Landing Page) ---
+# --- 🏠 首页 ---
 if selection == PAGES["home"]:
-    # 居中大字标题
-    st.markdown('<div class="main-title">漢開教育 校办工具箱</div>', unsafe_allow_html=True) # 漢開
+    st.markdown('<div class="main-title">漢開教育 校办工具箱</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">HKA Administrative Toolkit</div>', unsafe_allow_html=True)
 
-    # 横排三个模块入口
-    col1, col2, col3 = st.columns(3)
-
-    # 定义跳转回调函数：现在它修改的是 pending_page
     def switch_page(page_name):
         st.session_state.pending_page = page_name
 
+    col1, col2, col3, col4 = st.columns(4)
+
     with col1:
-        # 修复对齐：将 st.info 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.info("📊 **师资效能评估**\n\nDeepSeek—R1 驱动的师资结构诊断与模拟沙盘。")
+        st.info("📊 **师资效能评估**\n\nDeepSeek—R1 驱动的师资结构诊断。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("进入评估系统", use_container_width=True, on_click=switch_page, args=(PAGES["eval"],))
 
     with col2:
-        # 修复对齐：将 st.success 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.success("📝 **校长文章库生成器**\n\nWord 批量转网页工具，纯前端处理，安全高效。")
+        st.success("📝 **文章库生成器**\n\nWord 批量转网页工具，纯前端处理。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("打开生成工具", use_container_width=True, on_click=switch_page, args=(PAGES["article"],))
 
     with col3:
-        # 修复对齐：将 st.warning 放在固定高度的容器内
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
-        st.warning("🔥 **公众号热点分析**\n\n基于 Kimi-K2 的公众号数据可视化与词云分析。")
+        st.warning("🔥 **热点分析**\n\n公众号数据可视化与词云分析。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("开始热点分析", use_container_width=True, on_click=switch_page, args=(PAGES["hotspot"],))
 
-    # 首页底部的额外装饰或说明
+    with col4:
+        st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
+        st.error("💡 **奇思妙想**\n\nMAS 研报与 AI 易学预测实验室。")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.button("进入实验室", use_container_width=True, on_click=switch_page, args=(PAGES["whimsy"],))
+
     st.markdown("---")
     st.caption("请从上方选择模块或使用左侧侧边栏进行导航。")
 
-# --- 模块 1: 师资效能评估 (Python) ---
+# --- 模块 1: 师资效能评估 ---
 elif selection == PAGES["eval"]:
     script_file = "师资效能评估壳子.py"
     if os.path.exists(script_file):
@@ -133,24 +127,22 @@ elif selection == PAGES["eval"]:
                 code = f.read()
                 exec(code, globals())
         except Exception as e:
-            st.error(f"❌ 运行 {script_file} 时发生错误:\n{e}")
+            st.error(f"❌ 运行错误: {e}")
     else:
-        st.warning(f"⚠️ 找不到 {script_file}。请确保文件已上传到仓库。")
+        st.warning(f"⚠️ 找不到 {script_file}")
 
-# --- 模块 2: 文章库生成器 (HTML) ---
+# --- 模块 2: 文章库生成器 ---
 elif selection == PAGES["article"]:
     st.title("📄 Word 转网页生成工具")
-    st.caption("纯前端工具，保护数据隐私。")
     try:
         with open("demo.html", "r", encoding="utf-8") as f:
             html_content = f.read()
         components.html(html_content, height=900, scrolling=True)
     except FileNotFoundError:
-        st.error("❌ 找不到 demo.html。请确保文件已上传。")
+        st.error("❌ 找不到 demo.html")
 
-# --- 模块 3: 公众号热点分析 (Python) ---
+# --- 模块 3: 公众号热点分析 ---
 elif selection == PAGES["hotspot"]:
-    # 模拟 hka.py 环境
     hka_file = "hka.py"
     if os.path.exists(hka_file):
         try:
@@ -158,15 +150,27 @@ elif selection == PAGES["hotspot"]:
                 code = f.read()
                 exec(code, globals())
         except Exception as e:
-            st.error(f"❌ 运行 hka.py 时发生错误:\n{e}")
-            st.info("提示：请检查 hka.py 是否包含与 app.py 冲突的配置（如重复的 set_page_config）。")
+            st.error(f"❌ 运行错误: {e}")
     else:
-        st.warning("⚠️ 尚未检测到 hka.py 文件。")
-        st.markdown(f"""
-        ### 如何启用此功能？
-        1. 请将你的 **`hka.py`** 文件上传到同一个 GitHub 仓库。
-        2. 如果 `hka.py` 用到了特殊的库（如 `jieba`, `wordcloud`, `pandas` 等），请记得更新 **`requirements.txt`**。
-        """)
+        st.warning("⚠️ 找不到 hka.py")
 
-# 6. 底部 Footer (全局显示)
+# --- 模块 4: 奇思妙想 (新增) ---
+elif selection == PAGES["whimsy"]:
+    st.title("💡 奇思妙想实验室")
+    st.caption("这里汇聚了 HKA 最前沿的 AI 实验项目，请点击下方标签切换应用。")
+    
+    # 使用 Tabs 标签页来区分两个应用
+    tab1, tab2 = st.tabs(["📈 MAS 联合研报终端", "🔮 AI 智能易学预测"])
+
+    with tab1:
+        st.info("正在加载 MAS 联合研报终端...")
+        # 嵌入 MAS Finance
+        components.iframe("https://masfinance.streamlit.app/?embed=true", height=1000, scrolling=True)
+
+    with tab2:
+        st.info("正在加载 AI 智能易学预测系统...")
+        # 嵌入 Fortune Tell
+        components.iframe("https://fortunetell.streamlit.app/?embed=true", height=1000, scrolling=True)
+
+# 6. 底部 Footer
 st.markdown('<div class="footer">by Ouuuuuuuuuuu</div>', unsafe_allow_html=True)
