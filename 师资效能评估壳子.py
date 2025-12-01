@@ -25,9 +25,13 @@ def ai_parse_excel(df):
     """
     使用 DeepSeek-V3 能够理解任意乱七八糟的表头，
     将其清洗为系统所需的标准 JSON 格式。
+    返回: (result_list, error_message)
     """
     # 1. 全量处理
-    csv_content = df.to_csv(index=False)
+    try:
+        csv_content = df.to_csv(index=False)
+    except Exception as e:
+        return None, f"数据转换CSV失败: {str(e)}"
     
     # 2. 参考模版 (Reference Template)
     reference_template = """
@@ -95,28 +99,42 @@ def ai_parse_excel(df):
         }
         
         response = requests.post(url, json=payload, headers=headers)
+        
+        # 错误处理：HTTP 状态码
+        if response.status_code != 200:
+            return None, f"API请求失败 (Code: {response.status_code}): {response.text}"
+
         response_data = response.json()
         
+        # 错误处理：API 返回错误信息
         if "choices" not in response_data:
-            raise Exception(f"API Error: {response_data}")
+            error_msg = response_data.get("error", {}).get("message", str(response_data))
+            return None, f"API 返回错误: {error_msg}"
             
         content = response_data["choices"][0]["message"]["content"]
         content = content.replace("```json", "").replace("```", "").strip()
-        parsed_result = json.loads(content)
         
+        try:
+            parsed_result = json.loads(content)
+        except json.JSONDecodeError:
+            return None, "AI 返回的数据不是合法的 JSON 格式"
+        
+        final_list = []
         if isinstance(parsed_result, dict):
             for key, val in parsed_result.items():
                 if isinstance(val, list):
-                    return val
-            return []
+                    final_list = val
+                    break
         elif isinstance(parsed_result, list):
-            return parsed_result
-        else:
-            return []
+            final_list = parsed_result
+            
+        if not final_list:
+            return None, "AI 未能从内容中解析出有效的数据列表"
+            
+        return final_list, None
 
     except Exception as e:
-        print(f"AI Parse Error: {e}")
-        return None
+        return None, f"执行异常: {str(e)}"
 
 # ==============================================================================
 # 3. 页面逻辑控制 (状态机)
@@ -164,7 +182,7 @@ if not st.session_state.data_confirmed:
                     df = pd.read_excel(uploaded_file)
                 
                 # 2. 调用 AI 解析
-                ai_result = ai_parse_excel(df)
+                ai_result, error_msg = ai_parse_excel(df)
                 
                 if ai_result and len(ai_result) > 0:
                     st.success(f"✅ 解析成功！共提取 {len(ai_result)} 条教师数据。")
@@ -185,10 +203,13 @@ if not st.session_state.data_confirmed:
                             st.session_state.data_confirmed = True
                             st.rerun() # 重新运行以跳转到页面 B
                 else:
-                    st.error("❌ AI 未能从文件中提取到有效数据，请检查文件内容是否包含必要信息。")
+                    # 显示具体的错误信息
+                    error_text = error_msg if error_msg else "未知错误，未能提取到数据。"
+                    st.error(f"❌ 数据解析失败: {error_text}")
+                    st.warning("建议检查：1. 文件是否包含表头？ 2. API Key 余额是否充足？ 3. 文件是否损坏？")
             
             except Exception as e:
-                st.error(f"处理过程中发生错误: {str(e)}")
+                st.error(f"处理过程中发生系统级错误: {str(e)}")
 
 # ------------------------------------------------------------------------------
 # 页面 B: 效能评估大屏 (Dashboard)
