@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import docx
 import json
 import requests
 import io
 import time
 from datetime import datetime
+from pypdf import PdfReader  # 使用轻量级库防止部署报错
 
 # ==========================================
 # 0. 配置与常量
@@ -16,8 +16,7 @@ st.set_page_config(page_title="AI 智能简历筛选系统 V3.2", layout="wide",
 
 TARGET_CITY = "深圳"
 
-# 定义 JSON 提取的 Schema
-# 关键修改：增加了 school_tier 字段，让 AI 自己判断
+# 定义 JSON 提取的 Schema (提示词的核心部分)
 JSON_SCHEMA = """
 {
     "basic_info": {
@@ -74,16 +73,16 @@ JSON_SCHEMA = """
 # ==========================================
 
 def extract_text_from_pdf(file_bytes):
-    """解析 PDF 文件"""
+    """解析 PDF 文件 (使用 pypdf，更稳定)"""
     text = ""
     try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+        reader = PdfReader(io.BytesIO(file_bytes))
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
     except Exception as e:
-        return f"Error reading PDF: {str(e)}"
+        return f"PDF读取错误: {str(e)}"
     return text
 
 def extract_text_from_docx(file_bytes):
@@ -94,29 +93,33 @@ def extract_text_from_docx(file_bytes):
         for para in doc.paragraphs:
             text += para.text + "\n"
     except Exception as e:
-        return f"Error reading DOCX: {str(e)}"
+        return f"Word读取错误: {str(e)}"
     return text
 
 def parse_files(uploaded_files):
     """批量处理上传的文件"""
     parsed_data = []
     for file in uploaded_files:
-        file_name = file.name
-        content = file.read()
-        text = ""
-        
-        if file_name.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(content)
-        elif file_name.lower().endswith(('.docx', '.doc')):
-            text = extract_text_from_docx(content)
-        else:
-            text = "Unsupported file format."
+        try:
+            file_name = file.name
+            content = file.read()
+            text = ""
             
-        parsed_data.append({"filename": file_name, "content": text})
+            if file_name.lower().endswith('.pdf'):
+                text = extract_text_from_pdf(content)
+            elif file_name.lower().endswith(('.docx', '.doc')):
+                text = extract_text_from_docx(content)
+            else:
+                text = "不支持的文件格式"
+                
+            parsed_data.append({"filename": file_name, "content": text})
+        except Exception as e:
+            st.error(f"文件 {file.name} 处理失败: {str(e)}")
+            
     return parsed_data
 
 # ==========================================
-# 2. 阶段二：AI 智能提取 (AI Extraction)
+# 2. 阶段二：AI 智能提取 (DeepSeek-V3.2)
 # ==========================================
 
 def call_deepseek_api(text, api_key):
@@ -140,11 +143,11 @@ def call_deepseek_api(text, api_key):
     {JSON_SCHEMA}
     """
     
-    # 防止 Tokens 溢出，截取前 12000 字符 (V3 支持更长上下文，这里适当放宽)
-    truncated_text = text[:12000]
+    # 截取文本防止超长 (V3.2 支持较长上下文，这里给 15000 字符足够)
+    truncated_text = text[:15000]
 
     payload = {
-        "model": "deepseek-ai/DeepSeek-V3.2", # 用户指定的新模型
+        "model": "deepseek-ai/DeepSeek-V3.2", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"请分析以下简历内容：\n\n{truncated_text}"}
@@ -158,7 +161,6 @@ def call_deepseek_api(text, api_key):
         response.raise_for_status()
         result = response.json()
         content = result['choices'][0]['message']['content']
-        # 清理可能存在的 markdown 符号
         content = content.replace("```json", "").replace("```", "").strip()
         return json.loads(content)
     except Exception as e:
@@ -171,11 +173,10 @@ def call_deepseek_api(text, api_key):
 
 def calculate_score(data):
     """
-    严格按照 Excel 文档中的打分表进行评分
-    现在利用 AI 识别出的 Tag 进行打分，不再硬编码学校名单
+    基于 AI 提取的 Tag 进行硬性规则打分
     """
     score = 0
-    logs = [] # 记录加分原因
+    logs = [] 
 
     basic = data.get('basic_info', {})
     edu = data.get('education', {})
@@ -183,7 +184,6 @@ def calculate_score(data):
     achieve = data.get('achievements', {})
     ai = data.get('ai_assessment', {})
 
-    # 辅助函数：安全获取数字
     def get_num(val):
         try:
             return float(val)
@@ -198,16 +198,12 @@ def calculate_score(data):
         logs.append("专业: 省级奖项 +5")
     score += score_p1
 
-    # --- 2. 学习经历 (完全依赖 AI 的 Tier 识别) ---
-    # 高中
+    # --- 2. 学习经历 ---
     hs_tier = str(edu.get('high_school_tier', ''))
     if "重点" in hs_tier or "县中" in hs_tier:
         score += 3
         logs.append(f"高中: {hs_tier} +3")
-    elif "普通" not in hs_tier and "未知" not in hs_tier: # AI 识别出了具体名字但没归类为重点
-         pass # 可以在 Prompt 优化，这里保守处理
     
-    # 本科 (AI 标签: C9, 985, 211, 海外名校)
     b_tier = str(edu.get('bachelor_tier', ''))
     if "C9" in b_tier:
         score += 5
@@ -219,7 +215,6 @@ def calculate_score(data):
         score += 1
         logs.append(f"本科: {b_tier} +1")
     
-    # 研究生
     m_tier = str(edu.get('master_tier', ''))
     if "C9" in m_tier:
         score += 5
@@ -231,7 +226,6 @@ def calculate_score(data):
         score += 1
         logs.append(f"硕士: {m_tier} +1")
 
-    # 留学
     abroad = get_num(edu.get('study_abroad_years'))
     if abroad >= 2:
         score += 2
@@ -268,7 +262,6 @@ def calculate_score(data):
         logs.append(f"背景: 配偶在{TARGET_CITY} +1")
 
     # --- 4. 工作经历 ---
-    # 利用 AI 识别的学校档次
     work_tier = str(work.get('school_tier', ''))
     if "重点" in work_tier or "知名" in work_tier:
         score += 3
@@ -328,36 +321,29 @@ def calculate_score(data):
 # ==========================================
 
 def main():
-    st.title("🎓 智能简历筛选系统 V3.2")
-    st.markdown("""
-    **核心升级：**
-    * **引擎**: 集成 `deepseek-ai/DeepSeek-V3.2`
-    * **智能识别**: 自动识别 C9/985/211 及海外名校，无需维护院校名单
-    """)
-    
-    # --- 侧边栏配置 ---
-    st.sidebar.header("配置区域")
-    
-    api_key = None
+    st.title("🎓 智能简历筛选系统")
+    st.caption("Powered by DeepSeek-V3.2 & Streamlit")
+
+    # --- API Key 自动加载 ---
     try:
         api_key = st.secrets["SILICONFLOW_API_KEY"]
-        st.sidebar.success("✅ API Key 已从 Secrets 加载")
     except Exception:
-        pass
-        
-    if not api_key:
-        api_key = st.sidebar.text_input("请输入 SiliconFlow API Key", type="password")
-        if not api_key:
-            st.sidebar.warning("⚠️ 请输入 API Key 以继续")
+        st.error("❌ 未检测到 API Key。请在 .streamlit/secrets.toml 中配置 SILICONFLOW_API_KEY。")
+        st.stop()
             
-    uploaded_files = st.sidebar.file_uploader(
-        "批量上传简历 (支持 PDF/Word)", 
-        type=['pdf', 'docx', 'doc'], 
-        accept_multiple_files=True
-    )
+    # --- 侧边栏 ---
+    with st.sidebar:
+        st.header("操作面板")
+        st.success("✅ API Key 已连接")
+        uploaded_files = st.file_uploader(
+            "批量上传简历 (PDF/Word)", 
+            type=['pdf', 'docx', 'doc'], 
+            accept_multiple_files=True
+        )
+        start_btn = st.button("🚀 开始分析", type="primary", use_container_width=True)
 
-    # --- 开始分析按钮 ---
-    if st.sidebar.button("🚀 开始 DeepSeek 分析") and uploaded_files and api_key:
+    # --- 主逻辑 ---
+    if start_btn and uploaded_files:
         
         results = []
         progress_bar = st.progress(0)
@@ -365,38 +351,41 @@ def main():
         
         total_files = len(uploaded_files)
         
-        # 1. 解析文件
-        status_text.text("📂 正在读取文件...")
+        status_text.info("📂 正在预处理文件...")
         file_data_list = parse_files(uploaded_files)
         
         for i, file_data in enumerate(file_data_list):
             file_name = file_data['filename']
-            status_text.text(f"🤖 DeepSeek-V3.2 正在思考 ({i+1}/{total_files}): {file_name} ...")
+            content_text = file_data['content']
             
-            # 2. AI 提取
-            json_result = call_deepseek_api(file_data['content'], api_key)
+            # 简单校验
+            if len(content_text) < 10:
+                st.warning(f"⚠️ 文件 {file_name} 内容过短，已跳过。")
+                continue
+
+            status_text.text(f"🤖 正在分析 ({i+1}/{total_files}): {file_name}")
+            
+            # AI 调用
+            json_result = call_deepseek_api(content_text, api_key)
             
             if json_result:
-                # 3. 规则评分 (基于 AI 的识别结果)
+                # 规则评分
                 total_score, score_logs = calculate_score(json_result)
                 
-                # 扁平化数据用于 DataFrame
+                # 数据提取
                 basic = json_result.get('basic_info', {})
                 edu = json_result.get('education', {})
                 work = json_result.get('work_experience', {})
                 ai_eval = json_result.get('ai_assessment', {})
                 achieve = json_result.get('achievements', {})
                 
-                # 格式化列表为字符串
                 honor_str = ", ".join(achieve.get('honor_titles', [])) if isinstance(achieve.get('honor_titles'), list) else str(achieve.get('honor_titles', ''))
                 
-                # 组合显示院校和层次
                 bach_display = f"{edu.get('bachelor_school', '')} ({edu.get('bachelor_tier', '')})"
                 mast_display = f"{edu.get('master_school', '')} ({edu.get('master_tier', '')})"
                 
                 row = {
                     "源文件": file_name,
-                    # 基础信息
                     "姓名": basic.get('name'),
                     "性别": basic.get('gender'),
                     "年龄": basic.get('age'),
@@ -406,15 +395,11 @@ def main():
                     "研究生院校": mast_display,
                     "专业": f"{edu.get('bachelor_major', '')}/{edu.get('master_major', '')}",
                     "应聘学科": basic.get('subject'),
-                    
-                    # 核心筛选 (高亮区)
                     "预估评分": total_score,
                     "评分明细": score_logs,
                     "教龄": work.get('teaching_years'),
                     "职称/头衔": honor_str,
                     "现单位": f"{work.get('current_company')} ({work.get('school_tier', '')})",
-                    
-                    # AI 辅助区
                     "亮点摘要": ai_eval.get('summary'),
                     "风险提示": ai_eval.get('risk_warning'),
                     "AI潜质分": ai_eval.get('potential_score'),
@@ -422,49 +407,50 @@ def main():
                 }
                 results.append(row)
             else:
-                st.error(f"❌ 文件 {file_name} 解析失败或 API 无响应")
+                st.error(f"❌ 文件 {file_name} 分析失败")
             
-            # 更新进度条
             progress_bar.progress((i + 1) / total_files)
-            time.sleep(0.5) 
+            time.sleep(0.2) 
 
-        status_text.success("✅ 分析完成！")
+        status_text.success("✅ 所有文件分析完成！")
         
-        # 4. 生成报表
+        # --- 结果展示与导出 ---
         if results:
             df = pd.read_json(json.dumps(results))
-            
             if "预估评分" in df.columns:
                 df = df.sort_values(by="预估评分", ascending=False)
             
-            st.subheader("📊 简历分析结果预览")
-            st.dataframe(df.style.background_gradient(subset=['预估评分'], cmap='Greens'))
+            st.divider()
+            st.subheader(f"📊 分析结果 ({len(results)} 人)")
             
-            # 导出 Excel
+            # 使用 container 限制高度
+            with st.container(height=400):
+                st.dataframe(
+                    df.style.background_gradient(subset=['预估评分'], cmap='Greens'),
+                    use_container_width=True
+                )
+            
+            # 生成 Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df.to_excel(writer, sheet_name='面试花名册', index=False)
-                
                 workbook = writer.book
                 worksheet = writer.sheets['面试花名册']
-                
-                # 设置列宽
-                worksheet.set_column('A:H', 15)
-                worksheet.set_column('I:I', 10) # 评分
-                worksheet.set_column('J:M', 30) # 明细加宽
-                worksheet.set_column('N:Q', 30)
+                # 简单美化
+                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
+                for col_num, value in enumerate(df.columns.values):
+                    worksheet.write(0, col_num, value, header_fmt)
+                worksheet.set_column('A:Z', 18)
                 
             st.download_button(
-                label="📥 下载面试花名册 Excel",
+                label="📥 下载 Excel 花名册",
                 data=buffer.getvalue(),
-                file_name=f"面试花名册_V3.2_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.ms-excel"
+                file_name=f"面试花名册_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.ms-excel",
+                type="primary"
             )
-        else:
-            st.warning("未能提取到有效数据，请检查简历格式或 API 连接。")
 
 if __name__ == "__main__":
     main()
-
 
 
