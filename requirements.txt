@@ -9,4 +9,4 @@ matplotlib
 openpyxl
 xlsxwriter
 python-docx
-pypdf
+pymupdf
