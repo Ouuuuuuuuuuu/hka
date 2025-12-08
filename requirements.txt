@@ -7,3 +7,5 @@ jieba
 wordcloud
 matplotlib
 openpyxl
+pdfplumber
+python-docx
