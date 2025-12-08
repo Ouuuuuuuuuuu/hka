@@ -9,7 +9,7 @@ import re
 # ==============================================================================
 # 1. 核心配置与 API 初始化
 # ==============================================================================
-st.set_page_config(layout="wide", page_title="HKA 师资效能评估 AI 版")
+st.set_page_config(layout="wide", page_title="HKA 师资效能评估 AI版")
 
 # 强制从 Secrets 读取 Key
 try:
@@ -84,8 +84,8 @@ def ai_parse_excel(df):
 
     # 4. 调用 SiliconFlow API (使用 V3.2)
     try:
-        # 修复：移除错误的 Markdown 链接格式
-        url = "(https://api.siliconflow.cn/v1/chat/completions)"
+        # 修复：移除错误的 Markdown 链接格式，必须是纯字符串
+        url = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)"
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
