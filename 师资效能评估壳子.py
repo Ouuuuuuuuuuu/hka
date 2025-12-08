@@ -85,7 +85,7 @@ def ai_parse_excel(df):
     # 4. 调用 SiliconFlow API (使用 V3.2)
     try:
         # 修复：移除错误的 Markdown 链接格式
-        url = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)"
+        url = "(https://api.siliconflow.cn/v1/chat/completions)"
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
