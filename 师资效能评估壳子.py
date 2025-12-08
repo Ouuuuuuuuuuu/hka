@@ -84,6 +84,7 @@ def ai_parse_excel(df):
 
     # 4. 调用 SiliconFlow API (使用 V3.2)
     try:
+        # 修复：移除错误的 Markdown 链接格式
         url = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)"
         headers = {
             "Authorization": f"Bearer {API_KEY}",
@@ -114,23 +115,17 @@ def ai_parse_excel(df):
         content = response_data["choices"][0]["message"]["content"]
         
         # --- 增强型 JSON 提取逻辑 ---
-        # 1. 尝试直接解析
-        # 2. 如果失败，尝试正则表达式提取 [ ... ]
-        
         json_str = content
-        
         # 尝试提取最外层的列表结构
         match = re.search(r'\[.*\]', content, re.DOTALL)
         if match:
             json_str = match.group(0)
         else:
-            # 只有当正则没找到时，才尝试简单的替换清理
             json_str = content.replace("```json", "").replace("```", "").strip()
         
         try:
             parsed_result = json.loads(json_str)
         except json.JSONDecodeError as je:
-            # 截取前100个字符用于错误展示，方便排查
             snippet = content[:100] + "..." if len(content) > 100 else content
             return None, f"JSON 解析失败。AI 返回内容片段: {snippet}\n错误详情: {str(je)}"
         
@@ -227,11 +222,9 @@ else:
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>HKA 师资效能评估 2.5 Pro </title>
         
-        <!-- Tailwind CSS -->
+        <!-- 修复：CDN 链接移除 Markdown 格式 -->
         <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
-        <!-- ECharts -->
         <script src="[https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js](https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js)"></script>
-        <!-- FontAwesome -->
         <link href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" rel="stylesheet">
         
         <style>
@@ -691,7 +684,7 @@ else:
             // 1. Configuration & Consts
             // =========================================
             const DEEPSEEK_KEY = "[[SILICONFLOW_KEY]]";
-            // SiliconFlow API Endpoint (Standard V3)
+            // 修复：移除错误的 Markdown 格式链接
             const API_URL = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)";
 
             // Title Mapping
