@@ -4,6 +4,7 @@ import pandas as pd
 import requests
 import json
 import io
+import re
 
 # ==============================================================================
 # 1. 核心配置与 API 初始化
@@ -34,7 +35,6 @@ def ai_parse_excel(df):
         return None, f"数据转换CSV失败: {str(e)}"
     
     # 2. 定义前端严格需要的数据 Schema
-    # 这对应了前端 JS 中的字段: name, age, subject, edu (1/2), titleLevel (1-5), rawTitle
     target_schema = """
     [
       {
@@ -48,7 +48,7 @@ def ai_parse_excel(df):
     ]
     """
     
-    # 3. System Prompt - 强化指令，解决表头识别怪异的问题
+    # 3. System Prompt - 强化指令
     system_prompt = f"""
     你是一个专业的人力资源数据清洗专家。你的任务是将用户上传的人员数据清洗为标准的 JSON 格式。
 
@@ -66,7 +66,7 @@ def ai_parse_excel(df):
        - "中小学一级" -> 3
        - "中小学二级" -> 2
        - "未定职级" 或其他 -> 1
-    4. **输出格式**: 必须输出严格的 JSON 数组，不要包含 Markdown 格式（如 ```json ... ```）。请直接返回 JSON 字符串以节省 Token。
+    4. **输出格式**: 必须输出严格的 JSON 数组，**不要**包含任何 Markdown 标记（如 ```json）或解释性文字。直接返回 [ ... ]。
 
     【字段映射】
     - name: 对应 "姓名"
@@ -84,20 +84,20 @@ def ai_parse_excel(df):
 
     # 4. 调用 SiliconFlow API (使用 V3.2)
     try:
-        url = "https://api.siliconflow.cn/v1/chat/completions"
+        url = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)"
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "deepseek-ai/DeepSeek-V3.2", # 已更新为 V3.2
+            "model": "deepseek-ai/DeepSeek-V3.2",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             "response_format": {"type": "json_object"}, 
-            "temperature": 0.0, # 设为 0 保证数据提取的准确性
-            "max_tokens": 8192  # 保持较大 Token 以支持全量输出
+            "temperature": 0.0, 
+            "max_tokens": 8192 
         }
         
         response = requests.post(url, json=payload, headers=headers)
@@ -112,17 +112,30 @@ def ai_parse_excel(df):
             return None, f"API 返回错误: {error_msg}"
             
         content = response_data["choices"][0]["message"]["content"]
-        # 清理可能存在的 Markdown 标记
-        content = content.replace("```json", "").replace("```", "").strip()
+        
+        # --- 增强型 JSON 提取逻辑 ---
+        # 1. 尝试直接解析
+        # 2. 如果失败，尝试正则表达式提取 [ ... ]
+        
+        json_str = content
+        
+        # 尝试提取最外层的列表结构
+        match = re.search(r'\[.*\]', content, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        else:
+            # 只有当正则没找到时，才尝试简单的替换清理
+            json_str = content.replace("```json", "").replace("```", "").strip()
         
         try:
-            parsed_result = json.loads(content)
-        except json.JSONDecodeError:
-            return None, "AI 返回的数据不是合法的 JSON 格式，请检查源文件是否包含特殊字符。"
+            parsed_result = json.loads(json_str)
+        except json.JSONDecodeError as je:
+            # 截取前100个字符用于错误展示，方便排查
+            snippet = content[:100] + "..." if len(content) > 100 else content
+            return None, f"JSON 解析失败。AI 返回内容片段: {snippet}\n错误详情: {str(je)}"
         
         final_list = []
         if isinstance(parsed_result, dict):
-            # 尝试寻找列表值的 key
             for key, val in parsed_result.items():
                 if isinstance(val, list):
                     final_list = val
@@ -177,9 +190,6 @@ if not st.session_state.data_confirmed:
                 else:
                     df = pd.read_excel(uploaded_file)
                 
-                # --- 移除截断逻辑，全量处理 ---
-                # if len(df) > 100: ... (已删除)
-                
                 ai_result, error_msg = ai_parse_excel(df)
                 
                 if ai_result and len(ai_result) > 0:
@@ -218,14 +228,14 @@ else:
         <title>HKA 师资效能评估 2.5 Pro </title>
         
         <!-- Tailwind CSS -->
-        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
         <!-- ECharts -->
-        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script src="[https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js](https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js)"></script>
         <!-- FontAwesome -->
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+        <link href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" rel="stylesheet">
         
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+            @import url('[https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap](https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap)');
             
             body { font-family: 'Noto Sans SC', sans-serif; background-color: #f8fafc; color: #334155; }
             
@@ -682,7 +692,7 @@ else:
             // =========================================
             const DEEPSEEK_KEY = "[[SILICONFLOW_KEY]]";
             // SiliconFlow API Endpoint (Standard V3)
-            const API_URL = "https://api.siliconflow.cn/v1/chat/completions";
+            const API_URL = "[https://api.siliconflow.cn/v1/chat/completions](https://api.siliconflow.cn/v1/chat/completions)";
 
             // Title Mapping
             const LEVEL_NAMES = { 1:'未定职级', 2:'中小学二级', 3:'中小学一级', 4:'中小学高级', 5:'正高级' };
