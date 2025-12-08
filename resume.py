@@ -6,17 +6,26 @@ import requests
 import io
 import time
 from datetime import datetime
-from pypdf import PdfReader  # 使用轻量级库防止部署报错
+
+# ==========================================
+# 关键依赖库说明
+# 请务必安装: pip install pymupdf
+# ==========================================
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    st.error("请安装 pymupdf 库: pip install pymupdf")
+    st.stop()
 
 # ==========================================
 # 0. 配置与常量
 # ==========================================
 
-st.set_page_config(page_title="AI 智能简历筛选系统 V3.2", layout="wide", page_icon="📝")
+st.set_page_config(page_title="AI 智能简历筛选系统 (强力解析版)", layout="wide", page_icon="📝")
 
 TARGET_CITY = "深圳"
 
-# 定义 JSON 提取的 Schema (提示词的核心部分)
+# 定义 JSON 提取的 Schema
 JSON_SCHEMA = """
 {
     "basic_info": {
@@ -69,21 +78,27 @@ JSON_SCHEMA = """
 """
 
 # ==========================================
-# 1. 阶段一：文件预处理 (File Ingestion)
+# 1. 阶段一：文件预处理 (使用 PyMuPDF)
 # ==========================================
 
 def extract_text_from_pdf(file_bytes):
-    """解析 PDF 文件 (使用 pypdf，更稳定)"""
+    """
+    解析 PDF 文件 (使用 PyMuPDF/fitz)
+    这是目前 Python 中处理中文编码乱码能力最强的库
+    """
     text = ""
     try:
-        reader = PdfReader(io.BytesIO(file_bytes))
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+        # PyMuPDF 需要打开一个流
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            for page in doc:
+                # flags=0 可以更纯粹地提取文本，有时能避开布局干扰
+                text += page.get_text() + "\n"
     except Exception as e:
-        return f"PDF读取错误: {str(e)}"
-    return text
+        return f"PDF解析错误: {str(e)}"
+    
+    # 简单的后处理：去除多余的空行
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return "\n".join(lines)
 
 def extract_text_from_docx(file_bytes):
     """解析 Word 文件"""
@@ -97,7 +112,6 @@ def extract_text_from_docx(file_bytes):
     return text
 
 def parse_files(uploaded_files):
-    """批量处理上传的文件"""
     parsed_data = []
     for file in uploaded_files:
         try:
@@ -123,7 +137,6 @@ def parse_files(uploaded_files):
 # ==========================================
 
 def call_deepseek_api(text, api_key):
-    """调用 SiliconFlow API (DeepSeek-V3.2) 进行简历解析"""
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -143,7 +156,7 @@ def call_deepseek_api(text, api_key):
     {JSON_SCHEMA}
     """
     
-    # 截取文本防止超长 (V3.2 支持较长上下文，这里给 15000 字符足够)
+    # 上下文截断
     truncated_text = text[:15000]
 
     payload = {
@@ -168,13 +181,10 @@ def call_deepseek_api(text, api_key):
         return None
 
 # ==========================================
-# 3. 阶段三：Python 规则评分引擎 (Rule Engine)
+# 3. 阶段三：Python 规则评分引擎
 # ==========================================
 
 def calculate_score(data):
-    """
-    基于 AI 提取的 Tag 进行硬性规则打分
-    """
     score = 0
     logs = [] 
 
@@ -190,15 +200,13 @@ def calculate_score(data):
         except (ValueError, TypeError):
             return 0.0
 
-    # --- 1. 专业匹配 ---
-    score_p1 = 0
+    # 1. 专业匹配
     comp_str = str(achieve.get('teaching_competition', [])) + str(achieve.get('honor_titles', []))
     if "省" in comp_str and ("一等奖" in comp_str or "前三" in comp_str):
-        score_p1 += 5
+        score += 5
         logs.append("专业: 省级奖项 +5")
-    score += score_p1
 
-    # --- 2. 学习经历 ---
+    # 2. 学习经历
     hs_tier = str(edu.get('high_school_tier', ''))
     if "重点" in hs_tier or "县中" in hs_tier:
         score += 3
@@ -230,19 +238,16 @@ def calculate_score(data):
     if abroad >= 2:
         score += 2
         logs.append("留学: 2年以上 +2")
-    
-    exchange = str(edu.get('exchange_experience', '否'))
-    if exchange == '是':
+    if str(edu.get('exchange_experience', '否')) == '是':
         score += 1
         logs.append("留学: 交换经历 +1")
 
-    # --- 3. 家庭背景 ---
+    # 3. 家庭背景
     gender = str(basic.get('gender', ''))
-    marital = str(basic.get('marital_status', ''))
     if gender == '男':
         score += 3
         logs.append("背景: 男性 +3")
-    if gender == '女' and '已育' in marital:
+    if gender == '女' and '已育' in str(basic.get('marital_status', '')):
         score += 1
         logs.append("背景: 已婚已育 +1")
     
@@ -251,33 +256,27 @@ def calculate_score(data):
         score += 1
         logs.append("背景: 父母书香/机关 +1")
         
-    residence = str(basic.get('residence', ''))
-    if TARGET_CITY in residence:
+    if TARGET_CITY in str(basic.get('residence', '')):
         score += 1
         logs.append(f"背景: 住{TARGET_CITY} +1")
-        
-    partner = str(basic.get('partner_location', ''))
-    if TARGET_CITY in partner:
+    if TARGET_CITY in str(basic.get('partner_location', '')):
         score += 1
         logs.append(f"背景: 配偶在{TARGET_CITY} +1")
 
-    # --- 4. 工作经历 ---
+    # 4. 工作经历
     work_tier = str(work.get('school_tier', ''))
     if "重点" in work_tier or "知名" in work_tier:
         score += 3
         logs.append(f"工作: {work_tier} +3")
         
-    non_teaching = get_num(work.get('non_teaching_gap'))
-    if non_teaching > 2:
+    if get_num(work.get('non_teaching_gap')) > 2:
         score -= 3
         logs.append("工作: 非教空窗期 -3")
-        
-    overseas_work = get_num(work.get('overseas_work_years'))
-    if overseas_work >= 1:
+    if get_num(work.get('overseas_work_years')) >= 1:
         score += 3
         logs.append("工作: 海外工作 +3")
 
-    # --- 5. 教学科研 ---
+    # 5. 教学科研
     titles = str(achieve.get('honor_titles', []))
     if any(k in titles for k in ['特级', '学科带头人', '骨干', '优青']):
         score += 5
@@ -293,7 +292,7 @@ def calculate_score(data):
         score += 1 
         logs.append("能力: 学术成果 +1")
 
-    # --- 6. 管理能力 ---
+    # 6. 管理能力
     mgmt = str(work.get('management_role', ''))
     if mgmt and mgmt not in ['无', '未提及', 'None', 'null']:
         if "年级组长" in mgmt or "教研" in mgmt or "中层" in mgmt:
@@ -308,7 +307,7 @@ def calculate_score(data):
         score += 1
         logs.append("管理: 有班主任经历 +1")
 
-    # --- 7 & 8. 个人特质与AI潜质 ---
+    # 7. 潜质
     potential = get_num(ai.get('potential_score'))
     if potential > 0:
         score += potential
@@ -317,69 +316,73 @@ def calculate_score(data):
     return score, "; ".join(logs)
 
 # ==========================================
-# 4. 主程序界面 (UI)
+# 4. 主界面
 # ==========================================
 
 def main():
-    st.title("🎓 智能简历筛选系统")
-    st.caption("Powered by DeepSeek-V3.2 & Streamlit")
-
-    # --- API Key 自动加载 ---
+    st.title("🎓 智能简历筛选系统 (强力解析版)")
+    
     try:
         api_key = st.secrets["SILICONFLOW_API_KEY"]
     except Exception:
-        st.error("❌ 未检测到 API Key。请在 .streamlit/secrets.toml 中配置 SILICONFLOW_API_KEY。")
+        st.error("❌ 未配置 API Key")
         st.stop()
             
-    # --- 侧边栏 ---
     with st.sidebar:
         st.header("操作面板")
-        st.success("✅ API Key 已连接")
+        st.info("✅ 核心: PyMuPDF + DeepSeek-V3.2")
         uploaded_files = st.file_uploader(
-            "批量上传简历 (PDF/Word)", 
+            "批量上传简历", 
             type=['pdf', 'docx', 'doc'], 
             accept_multiple_files=True
         )
         start_btn = st.button("🚀 开始分析", type="primary", use_container_width=True)
+        
+        st.divider()
+        st.caption("🔧 调试工具")
+        debug_container = st.container()
 
-    # --- 主逻辑 ---
     if start_btn and uploaded_files:
         
         results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         total_files = len(uploaded_files)
         
-        status_text.info("📂 正在预处理文件...")
+        status_text.info("📂 正在解析文件文本...")
         file_data_list = parse_files(uploaded_files)
+        
+        # 调试：显示第一个文件的部分文本，确认是否乱码
+        if file_data_list:
+            with debug_container:
+                with st.expander(f"调试: 查看 {file_data_list[0]['filename']} 原始文本(前500字)"):
+                    st.text(file_data_list[0]['content'][:500])
         
         for i, file_data in enumerate(file_data_list):
             file_name = file_data['filename']
             content_text = file_data['content']
             
-            # 简单校验
-            if len(content_text) < 10:
-                st.warning(f"⚠️ 文件 {file_name} 内容过短，已跳过。")
+            # 如果解析出的文字太少，且是PDF，通常意味着是纯图片PDF
+            if len(content_text) < 50:
+                st.warning(f"⚠️ 文件 {file_name} 似乎是纯图片或无法提取文字，DeepSeek 无法读取。")
                 continue
 
-            status_text.text(f"🤖 正在分析 ({i+1}/{total_files}): {file_name}")
+            status_text.text(f"🤖 AI 分析中 ({i+1}/{total_files}): {file_name}")
             
-            # AI 调用
             json_result = call_deepseek_api(content_text, api_key)
             
             if json_result:
-                # 规则评分
                 total_score, score_logs = calculate_score(json_result)
                 
-                # 数据提取
                 basic = json_result.get('basic_info', {})
                 edu = json_result.get('education', {})
                 work = json_result.get('work_experience', {})
                 ai_eval = json_result.get('ai_assessment', {})
                 achieve = json_result.get('achievements', {})
                 
-                honor_str = ", ".join(achieve.get('honor_titles', [])) if isinstance(achieve.get('honor_titles'), list) else str(achieve.get('honor_titles', ''))
+                honor_str = str(achieve.get('honor_titles', ''))
+                if isinstance(achieve.get('honor_titles'), list):
+                    honor_str = ", ".join(achieve.get('honor_titles', []))
                 
                 bach_display = f"{edu.get('bachelor_school', '')} ({edu.get('bachelor_tier', '')})"
                 mast_display = f"{edu.get('master_school', '')} ({edu.get('master_tier', '')})"
@@ -407,14 +410,13 @@ def main():
                 }
                 results.append(row)
             else:
-                st.error(f"❌ 文件 {file_name} 分析失败")
+                st.error(f"❌ 文件 {file_name} AI 分析失败")
             
             progress_bar.progress((i + 1) / total_files)
             time.sleep(0.2) 
 
-        status_text.success("✅ 所有文件分析完成！")
+        status_text.success("✅ 分析完成！")
         
-        # --- 结果展示与导出 ---
         if results:
             df = pd.read_json(json.dumps(results))
             if "预估评分" in df.columns:
@@ -423,20 +425,17 @@ def main():
             st.divider()
             st.subheader(f"📊 分析结果 ({len(results)} 人)")
             
-            # 使用 container 限制高度
             with st.container(height=400):
                 st.dataframe(
                     df.style.background_gradient(subset=['预估评分'], cmap='Greens'),
                     use_container_width=True
                 )
             
-            # 生成 Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df.to_excel(writer, sheet_name='面试花名册', index=False)
                 workbook = writer.book
                 worksheet = writer.sheets['面试花名册']
-                # 简单美化
                 header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
                 for col_num, value in enumerate(df.columns.values):
                     worksheet.write(0, col_num, value, header_fmt)
