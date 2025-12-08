@@ -57,13 +57,14 @@ if 'current_page' not in st.session_state:
 if 'pending_page' not in st.session_state:
     st.session_state.pending_page = None
 
-# 定义页面列表 (更新了最后一个栏目)
+# 定义页面列表 (新增了 resume)
 PAGES = {
     "home": "🏠 首页",
     "eval": "📊 师资效能评估",
     "article": "📝 校长文章库生成器",
     "hotspot": "🔥 公众号热点分析",
-    "whimsy": "💡 奇思妙想"  # <--- 新增栏目
+    "whimsy": "💡 奇思妙想",
+    "resume": "📑 简历智能分析"  # <--- 新增栏目 Key
 }
 
 # 解决状态冲突
@@ -89,7 +90,8 @@ if selection == PAGES["home"]:
     def switch_page(page_name):
         st.session_state.pending_page = page_name
 
-    col1, col2, col3, col4 = st.columns(4)
+    # 修改为 5 列布局
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
@@ -114,6 +116,14 @@ if selection == PAGES["home"]:
         st.error("💡 **奇思妙想**\n\nMAS 研报与 AI 易学预测实验室。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.button("进入实验室", use_container_width=True, on_click=switch_page, args=(PAGES["whimsy"],))
+
+    # 新增的第 5 列
+    with col5:
+        st.markdown('<div class="fixed-height-box">', unsafe_allow_html=True)
+        # 使用 info 样式保持蓝调，或者你可以换其他颜色
+        st.info("📑 **简历分析**\n\n智能简历解析与优化建议工具。")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.button("开始简历分析", use_container_width=True, on_click=switch_page, args=(PAGES["resume"],))
 
     st.markdown("---")
     st.caption("请从上方选择模块或使用左侧侧边栏进行导航。")
@@ -154,23 +164,34 @@ elif selection == PAGES["hotspot"]:
     else:
         st.warning("⚠️ 找不到 hka.py")
 
-# --- 模块 4: 奇思妙想 (新增) ---
+# --- 模块 4: 奇思妙想 ---
 elif selection == PAGES["whimsy"]:
     st.title("💡 奇思妙想实验室")
     st.caption("这里汇聚了 HKA 最前沿的 AI 实验项目，请点击下方标签切换应用。")
     
-    # 使用 Tabs 标签页来区分两个应用
     tab1, tab2 = st.tabs(["📈 MAS 联合研报终端", "🔮 AI 智能易学预测"])
 
     with tab1:
         st.info("正在加载 MAS 联合研报终端...")
-        # 嵌入 MAS Finance
         components.iframe("https://masfinance.streamlit.app/?embed=true", height=1000, scrolling=True)
 
     with tab2:
         st.info("正在加载 AI 智能易学预测系统...")
-        # 嵌入 Fortune Tell
         components.iframe("https://fortunetell.streamlit.app/?embed=true", height=1000, scrolling=True)
+
+# --- 模块 5: 简历分析 (新增) ---
+elif selection == PAGES["resume"]:
+    resume_file = "resume.py"
+    if os.path.exists(resume_file):
+        try:
+            # 运行 resume.py
+            with open(resume_file, "r", encoding="utf-8") as f:
+                code = f.read()
+                exec(code, globals())
+        except Exception as e:
+            st.error(f"❌ 运行错误: {e}")
+    else:
+        st.warning(f"⚠️ 找不到 {resume_file}，请确保文件在同一目录下。")
 
 # 6. 底部 Footer
 st.markdown('<div class="footer">by Ouuuuuuuuuuu</div>', unsafe_allow_html=True)
