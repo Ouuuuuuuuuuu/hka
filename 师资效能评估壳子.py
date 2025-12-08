@@ -9,7 +9,7 @@ import re
 # ==============================================================================
 # 1. 核心配置与 API 初始化
 # ==============================================================================
-st.set_page_config(layout="wide", page_title="HKA 师资效能评估 AI版")
+st.set_page_config(layout="wide", page_title="HKA 师资效能评估 AI 版")
 
 # 强制从 Secrets 读取 Key
 try:
