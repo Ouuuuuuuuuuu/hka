@@ -8,7 +8,7 @@ import re
 # ==============================================================================
 # 1. 核心配置与 API 初始化
 # ==============================================================================
-st.set_page_config(layout="wide", page_title="HKA 师资效能评估 2.5 Pro")
+st.set_page_config(layout="wide", page_title="HKA 师资效能评估 3.0 Pro")
 
 # 强制从 Secrets 读取 Key
 try:
@@ -123,7 +123,7 @@ if not st.session_state.data_confirmed:
     st.title("🛠️ HKA 师资效能评估 - 智能数据导入")
     
     st.markdown("""
-    ### 👋 欢迎使用 (2.5 Pro Version)
+    ### 👋 欢迎使用 (3.0 Pro Version)
     请上传教师花名册（Excel/CSV）。AI 将自动识别并清洗数据。
     """)
     
@@ -154,7 +154,7 @@ if not st.session_state.data_confirmed:
                 st.error(f"文件处理错误: {str(e)}")
 
 # ------------------------------------------------------------------------------
-# 页面 B: 效能评估大屏 (2.5 Pro 完整版)
+# 页面 B: 效能评估大屏 (3.0 Pro 完整版)
 # ------------------------------------------------------------------------------
 else:
     with st.sidebar:
@@ -163,7 +163,7 @@ else:
             reset_app()
 
     # ==========================================================================
-    # 你的 2.5 Pro HTML 模版 (已修复 URL 语法错误，保留所有 UI/逻辑)
+    # 你的 3.0 Pro HTML 模版 (已修复 URL 语法错误，保留所有 UI/逻辑)
     # ==========================================================================
     html_template = r"""
     <!DOCTYPE html>
@@ -171,7 +171,7 @@ else:
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>HKA 师资效能评估 2.5 Pro </title>
+        <title>HKA 师资效能评估 3.0 Pro </title>
         
         <!-- 修复：移除 Markdown 链接格式，使用标准 HTML 引用 -->
         <script src="https://cdn.tailwindcss.com"></script>
@@ -302,7 +302,7 @@ else:
                 <div class="w-8 h-8 bg-indigo-600 rounded flex items-center justify-center text-white shadow-sm">
                     <i class="fa-solid fa-layer-group text-sm"></i>
                 </div>
-                <h1 class="font-bold text-slate-700 tracking-tight">HKA 师资效能评估 <span class="text-xs font-normal text-slate-400 ml-1">2.5 Pro (AI Edition)</span></h1>
+                <h1 class="font-bold text-slate-700 tracking-tight">HKA 师资效能评估 <span class="text-xs font-normal text-slate-400 ml-1">3.0 Pro (AI Edition)</span></h1>
             </div>
             <div class="flex items-center gap-3">
                 <div class="flex items-center gap-2 text-[10px] font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">
