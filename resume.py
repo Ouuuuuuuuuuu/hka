@@ -152,14 +152,14 @@ def decode_filename(filename) -> str:
         for encoding in ['gbk', 'gb2312', 'gb18030', 'utf-8', 'cp437', 'latin1']:
             try:
                 decoded = filename.decode(encoding)
-                if '�' not in decoded:
+                if '' not in decoded:
                     return decoded
             except:
                 continue
         return filename.decode('utf-8', errors='ignore')
     
     if isinstance(filename, str):
-        latin_chars = sum(1 for c in filename if '' <= c <= 'ÿ')
+        latin_chars = sum(1 for c in filename if '\u0080' <= c <= '\u00ff')
         total_chars = len(filename)
         
         if latin_chars > 0 and (latin_chars / total_chars) > 0.3:
@@ -168,8 +168,8 @@ def decode_filename(filename) -> str:
                 for encoding in ['gbk', 'gb2312', 'gb18030']:
                     try:
                         decoded = encoded.decode(encoding)
-                        if decoded and '�' not in decoded:
-                            new_latin = sum(1 for c in decoded if '' <= c <= 'ÿ')
+                        if decoded and '' not in decoded:
+                            new_latin = sum(1 for c in decoded if '\u0080' <= c <= '\u00ff')
                             if new_latin == 0 or (new_latin / len(decoded)) < 0.1:
                                 return decoded
                     except:
@@ -281,37 +281,86 @@ def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False) -> str:
     cache.set(file_bytes, {'pdf_text': result})
     return result
 
+# ==========================================
+# 增强：DOCX/DOC 解析 (保留顺序，表格转 Markdown)
+# ==========================================
 def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
-    """DOCX/DOC解析，支持多种方式"""
+    """增强版 DOCX/DOC 解析，保留文本顺序，并将表格转为 Markdown 格式"""
     text = ""
     
+    # 1. 优先处理 .docx 格式 (高精度解析)
     if DOCX_SUPPORT and file_name.lower().endswith('.docx'):
         try:
+            from docx.oxml.table import CT_Tbl
+            from docx.oxml.text.paragraph import CT_P
+            from docx.table import Table
+            from docx.text.paragraph import Paragraph
+
             doc = docx.Document(io.BytesIO(file_bytes))
-            for para in doc.paragraphs:
-                text += para.text + "\n"
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        text += cell.text + " "
-                    text += "\n"
+            
+            # 遍历文档的 body 的子节点，保证读取顺序（段落和表格的原始排版顺序）
+            for child in doc.element.body.iterchildren():
+                # 处理段落
+                if isinstance(child, CT_P):
+                    p = Paragraph(child, doc)
+                    if p.text.strip():
+                        text += p.text.strip() + "\n"
+                
+                # 处理表格
+                elif isinstance(child, CT_Tbl):
+                    table = Table(child, doc)
+                    text += "\n"  # 表格前空行
+                    for i, row in enumerate(table.rows):
+                        # 处理单元格内的换行符和竖线，防止破坏 Markdown 表格语法
+                        row_data = [
+                            cell.text.replace('\n', ' ').replace('\r', '').replace('|', '｜').strip() 
+                            for cell in row.cells
+                        ]
+                        text += "| " + " | ".join(row_data) + " |\n"
+                        # 第一行下面添加 Markdown 表头分割线
+                        if i == 0:
+                            text += "|" + "|".join(["---"] * len(row.cells)) + "|\n"
+                    text += "\n"  # 表格后空行
+            
             if text.strip():
                 return text
-        except:
+        except Exception as e:
+            # 遇到解析错误时不直接报错，退化到常规方法
             pass
-    
+
+    # 2. 处理旧版 .doc 格式 (优先尝试 antiword)
+    if file_name.lower().endswith('.doc'):
+        import subprocess
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.doc', delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            # 调用 antiword 命令提取带基本排版的文本（服务器部署环境推荐安装 antiword）
+            result = subprocess.run(['antiword', tmp_path], capture_output=True, text=True, timeout=10)
+            os.unlink(tmp_path)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+        except Exception:
+            try:
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except:
+                pass
+
+    # 3. 终极降级方案 (适用于解析失败的 docx 或 没有 antiword 的 doc)
     if PDF_SUPPORT:
         try:
             filetype = "doc" if file_name.lower().endswith('.doc') else "docx"
-            with fitz.open(stream=file_bytes, filetype=filetype) as doc:
-                for page in doc:
+            with fitz.open(stream=file_bytes, filetype=filetype) as doc_fitz:
+                for page in doc_fitz:
                     text += page.get_text() + "\n"
             if text.strip():
                 return text
-        except:
+        except Exception:
             pass
-    
-    return "Word文档解析失败"
+
+    return text if text.strip() else "Word文档解析失败或内容为空"
 
 def is_hidden_file(filename: str) -> bool:
     """检查是否为隐藏文件"""
@@ -857,7 +906,7 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         basic = api_data.get('basic_info', {})
         edu = api_data.get('education', {})
         work = api_data.get('work_experience', {})
-        achieve = api_data.get('achievements', {})
+        achieve = data.get('achievements', {}) if 'data' in locals() else api_data.get('achievements', {})
         ai_eval = api_data.get('ai_assessment', {})
         
         total_score, score_logs = calculate_score(api_data)
@@ -899,9 +948,9 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
             '非教空窗': work.get('non_teaching_gap', ''),
             '海外工作': work.get('overseas_work_years', ''),
             # 成就荣誉
-            '荣誉称号': ', '.join(achieve.get('honor_titles', [])) if isinstance(achieve.get('honor_titles'), list) else str(achieve.get('honor_titles', '')),
-            '教学竞赛': ', '.join(achieve.get('teaching_competition', [])) if isinstance(achieve.get('teaching_competition'), list) else str(achieve.get('teaching_competition', '')),
-            '学术成果': ', '.join(achieve.get('academic_results', [])) if isinstance(achieve.get('academic_results'), list) else str(achieve.get('academic_results', '')),
+            '荣誉称号': ', '.join(api_data.get('achievements', {}).get('honor_titles', [])) if isinstance(api_data.get('achievements', {}).get('honor_titles'), list) else str(api_data.get('achievements', {}).get('honor_titles', '')),
+            '教学竞赛': ', '.join(api_data.get('achievements', {}).get('teaching_competition', [])) if isinstance(api_data.get('achievements', {}).get('teaching_competition'), list) else str(api_data.get('achievements', {}).get('teaching_competition', '')),
+            '学术成果': ', '.join(api_data.get('achievements', {}).get('academic_results', [])) if isinstance(api_data.get('achievements', {}).get('academic_results'), list) else str(api_data.get('achievements', {}).get('academic_results', '')),
             # 评分（合并版）
             '综合评分': total_score,
             '评分详情': score_logs,
@@ -1088,7 +1137,7 @@ def main():
         # 评分维度说明
         with st.expander("📋 评分标准说明 (v3.20 - 合并版)"):
             st.markdown("""
-            **评分维度（最大约47分）：**
+            **评分维度（最大47分）：**
             - 专业匹配：省级教学竞赛一等奖 +5
             - 学习经历：高中重点+3，本科C9+5/985+3/211+1，硕士同本科，留学2年+2，交换+1
             - 家庭背景：男性+3，已婚已育+1，书香/机关家庭+1，住目标城市+1，配偶在目标城市+1
