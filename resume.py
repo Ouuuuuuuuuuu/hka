@@ -975,7 +975,7 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
 # 主界面
 # ============================
 def main():
-    st.title("🎓 智能简历筛选系统 v3.20")
+    st.title("🎓 智能简历筛选系统 0320")
     st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 OCR自动检测")
     
     # 初始化
