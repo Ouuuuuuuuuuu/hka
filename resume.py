@@ -65,7 +65,7 @@ except ImportError as e:
 # 配置区
 # ============================
 st.set_page_config(
-    page_title="智能简历筛选系统 v3.20", 
+    page_title="智能简历筛选系统 0324", 
     layout="wide", 
     page_icon="📄",
     initial_sidebar_state="collapsed"
