@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>校长文章库 - 网页生成器</title>
+    <!-- 引入处理 Word 文档的库 (需要联网) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .drop-zone { border: 3px dashed #cbd5e1; transition: all 0.3s; }
+        .drop-zone.dragover { border-color: #3b82f6; background-color: #eff6ff; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen flex flex-col items-center justify-center p-6">
+
+    <div class="bg-white p-8 rounded-xl shadow-xl w-full max-w-2xl text-center">
+        <h1 class="text-2xl font-bold text-slate-800 mb-2">文章库生成工厂</h1>
+        <p class="text-slate-500 mb-6">无需 Python，直接在浏览器中把 Word 转换成网页</p>
+
+        <!-- 拖拽区域 -->
+        <div id="dropZone" class="drop-zone rounded-lg p-10 mb-6 cursor-pointer bg-slate-50 relative">
+            <input type="file" id="fileInput" multiple accept=".docx" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+            <div class="pointer-events-none">
+                <svg class="w-12 h-12 mx-auto text-slate-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                <p class="text-lg text-slate-700 font-medium">点击选择或拖拽 docx 文件到这里</p>
+                <p class="text-sm text-slate-400 mt-2">支持多选，一次性放入100篇也没问题</p>
+            </div>
+        </div>
+
+        <!-- 进度与状态 -->
+        <div id="statusArea" class="hidden text-left mb-6 bg-slate-50 p-4 rounded border border-slate-200 max-h-40 overflow-y-auto text-sm font-mono">
+            <div id="logContent"></div>
+        </div>
+
+        <!-- 下载按钮 -->
+        <button id="downloadBtn" disabled class="w-full py-3 px-6 rounded-lg bg-slate-300 text-white font-bold text-lg cursor-not-allowed transition-all shadow-sm">
+            等待文件...
+        </button>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const statusArea = document.getElementById('statusArea');
+        const logContent = document.getElementById('logContent');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        let processedArticles = [];
+
+        // 拖拽效果
+        ['dragenter', 'dragover'].forEach(e => {
+            dropZone.addEventListener(e, (event) => {
+                event.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+        });
+        ['dragleave', 'drop'].forEach(e => {
+            dropZone.addEventListener(e, (event) => {
+                event.preventDefault();
+                dropZone.classList.remove('dragover');
+            });
+        });
+
+        // 文件处理入口
+        dropZone.addEventListener('drop', (e) => handleFiles(e.dataTransfer.files));
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        async function handleFiles(files) {
+            const docxFiles = Array.from(files).filter(f => f.name.endsWith('.docx'));
+            
+            if (docxFiles.length === 0) {
+                alert('请放入 .docx 格式的 Word 文档');
+                return;
+            }
+
+            resetUI();
+            log(`检测到 ${docxFiles.length} 个文档，开始解析...`);
+
+            processedArticles = [];
+
+            // 并发处理所有文件
+            const promises = docxFiles.map((file, index) => processSingleFile(file, index));
+            
+            await Promise.all(promises);
+
+            log(`✅ 所有文档解析完毕！共 ${processedArticles.length} 篇。`);
+            enableDownload();
+        }
+
+        function processSingleFile(file, index) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const arrayBuffer = event.target.result;
+                    
+                    // 使用 mammoth 解析 Word
+                    mammoth.extractRawText({arrayBuffer: arrayBuffer})
+                        .then(function(result) {
+                            const text = result.value;
+                            const info = parseFilename(file.name);
+                            
+                            // 生成摘要
+                            const snippet = text.substring(0, 60).replace(/\n/g, ' ') + '...';
+
+                            processedArticles.push({
+                                id: index,
+                                title: info.title,
+                                date: info.date,
+                                type: "文档",
+                                snippet: snippet,
+                                content: text
+                            });
+
+                            log(`[成功] ${info.title}`);
+                            resolve();
+                        })
+                        .catch(function(err) {
+                            log(`[失败] ${file.name}: ${err.message}`);
+                            resolve(); // 即使失败也继续
+                        });
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        // 文件名解析逻辑 (兼容 20250421标题.docx)
+        function parseFilename(filename) {
+            const name = filename.replace('.docx', '');
+            const dateMatch = name.match(/^(\d{8})/);
+            
+            let dateStr = new Date().toISOString().split('T')[0];
+            let title = name;
+
+            if (dateMatch) {
+                const rawDate = dateMatch[1];
+                dateStr = `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6,8)}`;
+                title = name.substring(8).replace(/^[-_ ]+/, '');
+            }
+
+            return { date: dateStr, title: title };
+        }
+
+        function log(msg) {
+            statusArea.classList.remove('hidden');
+            const p = document.createElement('div');
+            p.className = msg.includes('[失败]') ? 'text-red-500' : 'text-slate-600';
+            p.innerText = msg;
+            logContent.appendChild(p);
+            statusArea.scrollTop = statusArea.scrollHeight;
+        }
+
+        function resetUI() {
+            logContent.innerHTML = '';
+            downloadBtn.className = 'w-full py-3 px-6 rounded-lg bg-slate-300 text-white font-bold text-lg cursor-not-allowed transition-all shadow-sm';
+            downloadBtn.innerText = '正在处理...';
+            downloadBtn.disabled = true;
+        }
+
+        function enableDownload() {
+            downloadBtn.className = 'w-full py-3 px-6 rounded-lg bg-green-500 hover:bg-green-600 text-white font-bold text-lg cursor-pointer transition-all shadow-lg transform hover:-translate-y-0.5';
+            downloadBtn.innerText = '📥 生成并下载“校长文章库.html”';
+            downloadBtn.disabled = false;
+            downloadBtn.onclick = downloadFinalHTML;
+        }
+
+        // 生成最终 HTML 文件的核心逻辑
+        function downloadFinalHTML() {
+            const dataJson = JSON.stringify(processedArticles, null, 4);
+            
+            // 这里嵌入的是展示页的模板代码
+            const template = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>校长讲话与文章数据库</title>
+<script src="https://cdn.tailwindcss.com"></\script>
+<style>
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#f1f1f1}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}::-webkit-scrollbar-thumb:hover{background:#94a3b8}
+.article-content{line-height:1.8;color:#334155;white-space:pre-wrap;font-family:'Georgia','Microsoft YaHei',serif}
+.article-content p{margin-bottom:1.5em}
+.active-item{background-color:#e0f2fe;border-left:4px solid #0284c7}
+</style>
+</head>
+<body class="bg-slate-50 h-screen flex flex-col md:flex-row overflow-hidden font-sans text-slate-800">
+<aside class="w-full md:w-96 bg-white shadow-lg z-10 flex flex-col h-[40vh] md:h-full border-r border-slate-200">
+<div class="p-5 bg-slate-800 text-white shrink-0"><div class="flex items-center gap-3 mb-4"><h1 class="text-xl font-bold tracking-wide">校长文章库</h1></div>
+<div class="relative"><input type="text" id="searchInput" placeholder="搜索标题、内容..." class="w-full pl-10 pr-4 py-2 rounded bg-slate-700 border border-slate-600 text-white focus:outline-none focus:border-blue-400" onkeyup="filterArticles()"></div>
+<div class="mt-2 text-xs text-slate-400 flex justify-between"><span id="countLabel">共 ${processedArticles.length} 篇</span><span>离线版</span></div></div>
+<div id="articleList" class="flex-1 overflow-y-auto bg-white"></div></aside>
+<main class="flex-1 h-full overflow-y-auto bg-slate-50 relative scroll-smooth" id="mainScroll">
+<div id="welcomeState" class="flex flex-col items-center justify-center h-full text-slate-400 p-8"><h2 class="text-2xl font-semibold text-slate-500 mb-2">请选择一篇文章</h2></div>
+<div id="articleDetail" class="hidden max-w-4xl mx-auto min-h-full bg-white shadow-sm md:m-8 md:rounded-lg overflow-hidden">
+<div class="bg-white border-b border-slate-100 p-8 pb-4 sticky top-0 z-10 opacity-95 backdrop-blur"><div class="flex justify-between items-start gap-4"><div><h1 id="detailTitle" class="text-2xl md:text-3xl font-bold text-slate-800 mb-2 leading-tight"></h1><div class="flex items-center text-sm text-slate-500 gap-4"><span id="detailDate"></span> | 王占宝</div></div><button onclick="copyContent()" class="p-2 hover:bg-slate-100 rounded text-slate-500">复制</button></div></div>
+<div class="p-8 pt-6"><article id="detailContent" class="article-content text-lg"></article></div></div></main>
+<script>
+const articles = ${dataJson};
+const listContainer = document.getElementById('articleList');
+const welcomeState = document.getElementById('welcomeState');
+const articleDetail = document.getElementById('articleDetail');
+articles.sort((a, b) => new Date(b.date) - new Date(a.date));
+renderList(articles);
+function renderList(data) {
+    listContainer.innerHTML = '';
+    if(data.length===0){listContainer.innerHTML='<div class="p-5 text-center">无结果</div>';return;}
+    data.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'p-5 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors group';
+        div.onclick = () => showArticle(item, div);
+        div.innerHTML = '<h3 class="font-bold text-slate-700 mb-1 group-hover:text-blue-600">'+item.title+'</h3><div class="flex justify-between items-center mb-2"><span class="text-xs text-white bg-slate-400 px-2 py-0.5 rounded-full">'+item.date.slice(0,4)+'</span><span class="text-xs text-slate-400 font-mono">'+item.date+'</span></div><p class="text-xs text-slate-500 line-clamp-2">'+item.snippet+'</p>';
+        listContainer.appendChild(div);
+    });
+}
+function showArticle(item, element) {
+    document.querySelectorAll('#articleList > div').forEach(el => el.classList.remove('active-item'));
+    element.classList.add('active-item');
+    welcomeState.style.display = 'none';
+    articleDetail.classList.remove('hidden');
+    document.getElementById('detailTitle').innerText = item.title;
+    document.getElementById('detailDate').innerText = item.date;
+    document.getElementById('detailContent').innerText = item.content;
+    if(window.innerWidth < 768) document.getElementById('mainScroll').scrollTop = 0;
+}
+function filterArticles() {
+    const input = document.getElementById('searchInput').value.toLowerCase();
+    const filtered = articles.filter(i => i.title.toLowerCase().includes(input) || i.content.toLowerCase().includes(input) || i.date.includes(input));
+    renderList(filtered);
+}
+function copyContent() {
+    navigator.clipboard.writeText(document.getElementById('detailContent').innerText).then(()=>alert('已复制'));
+}
+<\/script></body></html>`;
+
+            const blob = new Blob([template], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '校长文章库_最终版.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>

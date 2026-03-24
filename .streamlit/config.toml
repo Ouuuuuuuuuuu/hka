@@ -1,0 +1,11 @@
+[server]
+# 最大上传文件大小 (MB)
+# Streamlit 默认 200MB，这里设为 2000MB (2GB)
+maxUploadSize = 2000
+
+# 增加消息大小限制
+maxMessageSize = 2000
+
+[runner]
+# 启用魔术命令
+magicEnabled = true

@@ -1,0 +1,14 @@
+streamlit
+pandas
+requests
+aiohttp
+nest_asyncio
+beautifulsoup4
+playwright
+jieba
+wordcloud
+matplotlib
+openpyxl
+xlsxwriter
+python-docx
+pymupdf
