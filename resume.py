@@ -9,6 +9,7 @@ import os
 import asyncio
 import aiohttp
 import nest_asyncio
+import re  # 新增: 用于底层正则提取
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple
@@ -65,7 +66,7 @@ except ImportError as e:
 # 配置区
 # ============================
 st.set_page_config(
-    page_title="智能简历筛选系统 0324", 
+    page_title="智能简历筛选系统 v3.20", 
     layout="wide", 
     page_icon="📄",
     initial_sidebar_state="collapsed"
@@ -179,7 +180,6 @@ def decode_filename(filename) -> str:
     
     return filename
 
-
 def fix_zip_filename(name: str) -> str:
     """修复ZIP文件名编码 - 终极版本"""
     if not name:
@@ -214,7 +214,6 @@ def fix_zip_filename(name: str) -> str:
             continue
     
     return name
-
 
 def get_zip_filenames_raw(zf) -> list:
     """获取ZIP文件名列表，尝试多种编码解码"""
@@ -282,13 +281,13 @@ def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False) -> str:
     return result
 
 # ==========================================
-# 增强：DOCX/DOC 解析 (保留顺序，表格转 Markdown)
+# 增强强化版：DOCX/DOC 解析 (解决 .doc 表格乱码问题)
 # ==========================================
 def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
-    """增强版 DOCX/DOC 解析，保留文本顺序，并将表格转为 Markdown 格式"""
+    """增强版 DOCX/DOC 解析：处理嵌套表格，暴力重构 .doc 二进制流"""
     text = ""
     
-    # 1. 优先处理 .docx 格式 (高精度解析)
+    # 1. 优先处理 .docx 格式 (高精度保持段落与表格的顺序)
     if DOCX_SUPPORT and file_name.lower().endswith('.docx'):
         try:
             from docx.oxml.table import CT_Tbl
@@ -298,37 +297,33 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
 
             doc = docx.Document(io.BytesIO(file_bytes))
             
-            # 遍历文档的 body 的子节点，保证读取顺序（段落和表格的原始排版顺序）
+            # 顺序读取 body 节点
             for child in doc.element.body.iterchildren():
-                # 处理段落
                 if isinstance(child, CT_P):
                     p = Paragraph(child, doc)
                     if p.text.strip():
                         text += p.text.strip() + "\n"
-                
-                # 处理表格
                 elif isinstance(child, CT_Tbl):
                     table = Table(child, doc)
-                    text += "\n"  # 表格前空行
+                    text += "\n"
                     for i, row in enumerate(table.rows):
-                        # 处理单元格内的换行符和竖线，防止破坏 Markdown 表格语法
+                        # 处理换行，转换成 Markdown 兼容的竖线分割
                         row_data = [
                             cell.text.replace('\n', ' ').replace('\r', '').replace('|', '｜').strip() 
                             for cell in row.cells
                         ]
                         text += "| " + " | ".join(row_data) + " |\n"
-                        # 第一行下面添加 Markdown 表头分割线
+                        # 添加 Markdown 表头底线
                         if i == 0:
                             text += "|" + "|".join(["---"] * len(row.cells)) + "|\n"
-                    text += "\n"  # 表格后空行
+                    text += "\n"
             
-            if text.strip():
+            if len(text.strip()) > 50:
                 return text
-        except Exception as e:
-            # 遇到解析错误时不直接报错，退化到常规方法
+        except Exception:
             pass
 
-    # 2. 处理旧版 .doc 格式 (优先尝试 antiword)
+    # 2. 处理旧版 .doc 格式 (尝试借助 antiword, 适合已安装的服务器)
     if file_name.lower().endswith('.doc'):
         import subprocess
         import tempfile
@@ -336,10 +331,9 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
             with tempfile.NamedTemporaryFile(suffix='.doc', delete=False) as tmp:
                 tmp.write(file_bytes)
                 tmp_path = tmp.name
-            # 调用 antiword 命令提取带基本排版的文本（服务器部署环境推荐安装 antiword）
             result = subprocess.run(['antiword', tmp_path], capture_output=True, text=True, timeout=10)
             os.unlink(tmp_path)
-            if result.returncode == 0 and result.stdout.strip():
+            if result.returncode == 0 and len(result.stdout.strip()) > 50:
                 return result.stdout
         except Exception:
             try:
@@ -348,15 +342,66 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
             except:
                 pass
 
-    # 3. 终极降级方案 (适用于解析失败的 docx 或 没有 antiword 的 doc)
+    # 3. 终极降级特种部队：纯 Python 暴力穿透法 (解决 \u0007 控制符导致的解析为空)
+    try:
+        best_text = ""
+        
+        # 3.1: 尝试识别从招聘平台导出的“伪装 DOC” (实质为 MHT/HTML)
+        for enc in ['utf-8', 'gbk', 'gb18030']:
+            try:
+                decoded_text = file_bytes.decode(enc)
+                if '<html' in decoded_text.lower() or 'xmlns:w=' in decoded_text.lower():
+                    # 剥离脚本和样式
+                    cleaned_html = re.sub(r'<style.*?>.*?</style>', '', decoded_text, flags=re.IGNORECASE|re.DOTALL)
+                    cleaned_html = re.sub(r'<script.*?>.*?</script>', '', cleaned_html, flags=re.IGNORECASE|re.DOTALL)
+                    # 将所有 HTML 节点转化为 Markdown 的列状结构
+                    cleaned_html = re.sub(r'<[^>]+>', ' | ', cleaned_html)
+                    cleaned_html = re.sub(r'(\s*\|\s*)+', ' | ', cleaned_html)
+                    if len(cleaned_html.strip()) > len(best_text):
+                        best_text = cleaned_html.strip()
+            except:
+                pass
+
+        # 3.2: 真正的 .doc 二进制流暴力重组
+        for enc in ['utf-16le', 'gbk', 'gb18030', 'utf-8']:
+            try:
+                raw_text = file_bytes.decode(enc, errors='ignore')
+                # 过滤掉非打印控制符 (保留 \t(0x09), \n(0x0a), \r(0x0d), 以及最重要的 Word 表格标识 \u0007(0x07))
+                cleaned = re.sub(r'[\x00-\x06\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', raw_text)
+                
+                # 魔改：将内部表格标示符强转为 Markdown 竖杠
+                cleaned = cleaned.replace('\u0007', ' | ')  
+                cleaned = cleaned.replace('\r', '\n')
+                
+                # 视觉重整压缩
+                cleaned = re.sub(r' {2,}', ' ', cleaned)
+                cleaned = re.sub(r'\|\s*\|', '|', cleaned)
+                cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+                
+                # 校验提取质量（统计包含的中文字符个数，取最优解）
+                zh_count = len(re.findall(r'[\u4e00-\u9fa5]', cleaned))
+                best_zh_count = len(re.findall(r'[\u4e00-\u9fa5]', best_text))
+                
+                if zh_count > best_zh_count and len(cleaned.strip()) > 50:
+                    best_text = cleaned
+            except:
+                continue
+        
+        if len(best_text.strip()) > 50:
+            return best_text
+    except Exception:
+        pass
+
+    # 4. 最后的退化方案：丢给 Fitz 盲算
     if PDF_SUPPORT:
         try:
             filetype = "doc" if file_name.lower().endswith('.doc') else "docx"
             with fitz.open(stream=file_bytes, filetype=filetype) as doc_fitz:
+                text_fitz = ""
                 for page in doc_fitz:
-                    text += page.get_text() + "\n"
-            if text.strip():
-                return text
+                    text_fitz += page.get_text() + "\n"
+                if len(text_fitz.strip()) > 50:
+                    return text_fitz
         except Exception:
             pass
 
@@ -975,8 +1020,8 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
 # 主界面
 # ============================
 def main():
-    st.title("🎓 智能简历筛选系统 0320")
-    st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 OCR自动检测")
+    st.title("🎓 智能简历筛选系统 v3.20")
+    st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 DOC底层穿透解析")
     
     # 初始化
     for key in ['uploaded_files_queue', 'processing', 'final_results', 'failed_files', 'need_review']:
@@ -1137,7 +1182,7 @@ def main():
         # 评分维度说明
         with st.expander("📋 评分标准说明 (v3.20 - 合并版)"):
             st.markdown("""
-            **评分维度（最大47分）：**
+            **评分维度（最大约47分）：**
             - 专业匹配：省级教学竞赛一等奖 +5
             - 学习经历：高中重点+3，本科C9+5/985+3/211+1，硕士同本科，留学2年+2，交换+1
             - 家庭背景：男性+3，已婚已育+1，书香/机关家庭+1，住目标城市+1，配偶在目标城市+1
