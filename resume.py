@@ -487,12 +487,15 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
         for i, future in enumerate(as_completed(future_to_item)):
             try:
                 result = future.result()
+                item = future_to_item[future]
                 
                 if result.error:
+                    # 保存 bytes 用于下载
                     failed_files.append({
                         'name': result.filename, 
                         'error': result.error,
-                        'size': result.file_size
+                        'size': result.file_size,
+                        'bytes': item.get('bytes', b'')  # 新增
                     })
                     st.write(f"❌ 解析失败: {result.filename} - {result.error}")
                 else:
@@ -503,7 +506,8 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
                 failed_files.append({
                     'name': item.get('name', 'unknown'), 
                     'error': str(e),
-                    'size': len(item.get('bytes', b''))
+                    'size': len(item.get('bytes', b'')),
+                    'bytes': item.get('bytes', b'')  # 新增
                 })
                 st.write(f"❌ 解析异常: {item.get('name', 'unknown')} - {str(e)}")
             
@@ -1049,6 +1053,9 @@ def main():
         if results['final_results']:
             st.session_state.final_results = results['final_results']
             st.session_state.need_review = results['need_review']
+        # 新增：保存失败文件
+        if results.get('failed_parse'):
+            st.session_state.failed_files = results['failed_parse']
     
     # 导出按钮
     if st.session_state.final_results:
@@ -1126,6 +1133,36 @@ def main():
             review_display_cols = ['文件名', '姓名', '性别', '任教学科', '需复核字段']
             review_display_cols = [c for c in review_display_cols if c in review_df.columns]
             st.dataframe(review_df[review_display_cols], use_container_width=True)
+        
+        # 新增：失败文件下载
+        if st.session_state.failed_files:
+            st.divider()
+            st.subheader("❌ 解析失败的文件")
+            st.write(f"共 {len(st.session_state.failed_files)} 个文件解析失败")
+            
+            # 显示失败列表
+            with st.expander("查看失败详情"):
+                for fail in st.session_state.failed_files[:10]:  # 最多显示10个
+                    st.text(f"• {fail['name']}: {fail['error']}")
+                if len(st.session_state.failed_files) > 10:
+                    st.caption(f"... 还有 {len(st.session_state.failed_files) - 10} 个")
+            
+            # 打包下载按钮
+            if st.button("📦 打包下载失败文件"):
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for fail in st.session_state.failed_files:
+                        file_bytes = fail.get('bytes', b'')
+                        if file_bytes:
+                            zf.writestr(fail['name'], file_bytes)
+                
+                zip_buffer.seek(0)
+                st.download_button(
+                    label="⬇️ 下载失败文件 (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"失败文件_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip"
+                )
 
 # ============================
 # 处理逻辑
