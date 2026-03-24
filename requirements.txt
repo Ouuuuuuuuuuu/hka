@@ -12,4 +12,7 @@ openpyxl
 xlsxwriter
 python-docx
 pymupdf
-re
+rarfile
+py7zr
+pytesseract
+Pillow
