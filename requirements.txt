@@ -12,3 +12,4 @@ openpyxl
 xlsxwriter
 python-docx
 pymupdf
+re
