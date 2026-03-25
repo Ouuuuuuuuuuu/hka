@@ -153,96 +153,82 @@ class ResumeCache:
 cache = ResumeCache()
 
 # ============================
-# 编码修复：正确处理ZIP中的中文文件名
+# 终极编码修复：精准解决跨平台与压缩包乱码
 # ============================
 
-def decode_filename(filename) -> str:
-    """彻底修复中文文件名乱码"""
-    if not filename:
-        return ""
-    
-    if isinstance(filename, bytes):
-        for encoding in ['gbk', 'gb2312', 'gb18030', 'utf-8', 'cp437', 'latin1']:
-            try:
-                decoded = filename.decode(encoding)
-                if '' not in decoded:
-                    return decoded
-            except:
-                continue
-        return filename.decode('utf-8', errors='ignore')
-    
-    if isinstance(filename, str):
-        latin_chars = sum(1 for c in filename if '\u0080' <= c <= '\u00ff')
-        total_chars = len(filename)
+def fix_garbled_filename(name: str) -> str:
+    """
+    终极乱码修复算法：严格逆转错乱编码，完美还原回真实中文。
+    核心原理：被损坏的其实是解码过程。我们需要将乱码按它错误的编码“反转回字节流”，再按正确的规则重新解剖。
+    """
+    if not name or not isinstance(name, str):
+        return name
         
-        if latin_chars > 0 and (latin_chars / total_chars) > 0.3:
-            try:
-                encoded = filename.encode('latin-1')
-                for encoding in ['gbk', 'gb2312', 'gb18030']:
-                    try:
-                        decoded = encoded.decode(encoding)
-                        if decoded and '' not in decoded:
-                            new_latin = sum(1 for c in decoded if '\u0080' <= c <= '\u00ff')
-                            if new_latin == 0 or (new_latin / len(decoded)) < 0.1:
-                                return decoded
-                    except:
-                        continue
-            except:
-                pass
-    
-    return filename
-
-def fix_zip_filename(name: str) -> str:
-    """修复ZIP文件名编码 - 终极版本"""
-    if not name:
-        return name
-    
-    # 如果已经是正常中文，直接返回
-    if all(ord(c) < 128 or '\u4e00' <= c <= '\u9fff' for c in name):
-        return name
-    
-    # 检测是否为乱码特征（拉丁扩展字符）
-    latin_chars = [c for c in name if '\u0080' <= c <= '\u00ff']
-    if not latin_chars:
-        return name
-    
-    # 尝试多种编码组合修复乱码
-    encodings = [
-        ('latin1', 'gbk'), ('latin1', 'gb2312'), ('latin1', 'gb18030'),
-        ('cp437', 'gbk'), ('cp437', 'gb2312'), ('cp437', 'gb18030'),
-        ('utf-8', 'gbk'),
+    # 定义高频错乱映射字典: (底层被强制读取的错误格式 -> 应该使用的真实格式)
+    repair_pairs = [
+        ('cp437', 'utf-8'),    # 典型：τ«ÇσÄå -> UTF-8 (Mac/Linux 在 Windows 下的无标识解压)
+        ('gbk', 'utf-8'),      # 典型：鏉ㄦ湞鏅 -> UTF-8 (纯正UTF-8字节流被误当GBK读取)
+        ('latin1', 'utf-8'),   # 常见通用单字节错误读取格式
+        ('cp437', 'gbk'),      # 早期 ZIP 默认 CP437，实际是 GBK 编码
+        ('latin1', 'gbk'),
+        ('mac_roman', 'utf-8'),# Mac 特有错误格式
     ]
-    
-    for encode_as, decode_as in encodings:
-        try:
-            raw_bytes = name.encode(encode_as)
-            decoded = raw_bytes.decode(decode_as)
-            chinese_chars = sum(1 for c in decoded if '\u4e00' <= c <= '\u9fff')
-            latin_left = sum(1 for c in decoded if '\u0080' <= c <= '\u00ff')
-            
-            if chinese_chars > latin_left:
-                return decoded
-        except:
-            continue
-    
-    return name
 
-def get_zip_filenames_raw(zf) -> list:
-    """获取ZIP文件名列表，尝试多种编码解码"""
+    best_result = name
+    
+    # 评分函数：评估转换结果的“健康度”
+    # 规则：有效汉字越多越好，乱码符号（拉丁目、希腊字母、特殊绘图符）越少越好
+    def score_text(text: str) -> int:
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fa5')
+        garbled_chars = sum(1 for c in text if 
+                            ('\u0080' <= c <= '\u024F') or  
+                            ('\u0370' <= c <= '\u03FF') or  
+                            ('\u2000' <= c <= '\u206F') or  
+                            ('\u2500' <= c <= '\u259F'))
+        return chinese_chars * 10 - garbled_chars * 5
+
+    best_score = score_text(name)
+
+    # 前置风控：如果原本就是健康的纯英文拼音或纯中文，则拒绝执行转换以免破坏原数据
+    if best_score >= 0 and sum(1 for c in name if ('\u0080' <= c <= '\u024F' or '\u0370' <= c <= '\u03FF')) == 0:
+        return name
+
+    # 循环尝试严格流逆转
+    for encode_as, decode_as in repair_pairs:
+        try:
+            # 1. 严格双向流校验：反向抽取回原始错误字节流
+            raw_bytes = name.encode(encode_as)
+            # 2. 重新按正确的编码格式完美解剖
+            decoded = raw_bytes.decode(decode_as)
+            
+            current_score = score_text(decoded)
+            
+            # 3. 找到更完美、更合理的中文解析结果
+            if current_score > best_score:
+                best_score = current_score
+                best_result = decoded
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+
+    return best_result
+
+def get_zip_filenames_raw(zf: zipfile.ZipFile) -> list:
+    """获取ZIP文件名列表，并对无标识的文件名执行深度乱码逆转"""
     result = []
     for info in zf.infolist():
         original = info.filename
         flag_utf8 = (info.flag_bits & 0x800) != 0
         
+        # 如果 ZIP 规范内明确标记了 UTF-8 (例如较新版本打包工具)，通常本身就是正常的
         if flag_utf8:
             result.append((original, original))
             continue
         
-        fixed = fix_zip_filename(original)
+        # 核心：Python 对无标识文件默认使用 cp437 解码导致了 original 必定乱码，送入修复工厂逆转
+        fixed = fix_garbled_filename(original)
         result.append((original, fixed))
     
     return result
-
 
 # ============================
 # 文件解析函数
@@ -454,7 +440,7 @@ def is_hidden_file(filename: str) -> bool:
     return False
 
 def extract_archive_files(file_bytes: bytes, file_name: str, max_size: int = 500 * 1024 * 1024) -> List[Dict]:
-    """批量解压压缩文件 - 支持大文件，修复中文编码，过滤隐藏文件"""
+    """批量解压压缩文件 - 支持大文件，接入严格逆转错乱编码算法"""
     extracted_files = []
     supported_ext = ('.pdf', '.docx', '.doc')
     
@@ -465,26 +451,15 @@ def extract_archive_files(file_bytes: bytes, file_name: str, max_size: int = 500
     
     try:
         if file_name.lower().endswith('.zip'):
-            zf = None
-            encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'cp437']
-            
-            for encoding in encodings:
-                try:
-                    zf = zipfile.ZipFile(io.BytesIO(file_bytes))
-                    break
-                except UnicodeDecodeError:
-                    continue
-                except Exception:
-                    break
-            
-            if zf is None:
-                zf = zipfile.ZipFile(io.BytesIO(file_bytes))
+            # 已清理掉原来外层臃肿的 encodings 无效循环
+            zf = zipfile.ZipFile(io.BytesIO(file_bytes))
             
             with zf:
                 total_uncompressed = sum(info.file_size for info in zf.infolist())
                 if total_uncompressed > max_size * 2:
                     st.warning(f"⚠️ 解压后文件过大 ({total_uncompressed/1024/1024:.0f}MB)")
                 
+                # 获取应用了终极反向纠错编码的映射列表
                 name_mapping = get_zip_filenames_raw(zf)
                 
                 for original_name, decoded_name in name_mapping:
@@ -508,7 +483,8 @@ def extract_archive_files(file_bytes: bytes, file_name: str, max_size: int = 500
                         if is_hidden_file(item):
                             continue
                         if item.lower().endswith(supported_ext):
-                            decoded_name = decode_filename(item)
+                            # 使用更强大的全局逆转算法
+                            decoded_name = fix_garbled_filename(item)
                             extracted_files.append({
                                 'name': os.path.basename(decoded_name), 
                                 'bytes': rf.read(item)
@@ -527,7 +503,8 @@ def extract_archive_files(file_bytes: bytes, file_name: str, max_size: int = 500
                         if is_hidden_file(name):
                             continue
                         if name.lower().endswith(supported_ext):
-                            decoded_name = decode_filename(name)
+                            # 使用更强大的全局逆转算法
+                            decoded_name = fix_garbled_filename(name)
                             extracted_files.append({
                                 'name': os.path.basename(decoded_name), 
                                 'bytes': bio.read()
