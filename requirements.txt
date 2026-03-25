@@ -16,3 +16,4 @@ rarfile
 py7zr
 pytesseract
 Pillow
+olefile
