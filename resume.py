@@ -9,7 +9,8 @@ import os
 import asyncio
 import aiohttp
 import nest_asyncio
-import re  # 新增: 用于底层正则提取
+import re  # 用于底层正则提取
+import struct # 新增：用于底层解剖二进制流
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple
@@ -20,7 +21,9 @@ from dataclasses import dataclass
 # 应用 nest_asyncio 以支持在 Streamlit 中运行异步代码
 nest_asyncio.apply()
 
-# 可选依赖
+# ============================
+# 可选依赖加载与状态监测
+# ============================
 try:
     import fitz  # PyMuPDF
     PDF_SUPPORT = True
@@ -34,6 +37,12 @@ try:
     DOCX_SUPPORT = True
 except ImportError:
     DOCX_SUPPORT = False
+
+try:
+    import olefile
+    OLEFILE_SUPPORT = True
+except ImportError:
+    OLEFILE_SUPPORT = False
 
 try:
     import rarfile
@@ -66,7 +75,7 @@ except ImportError as e:
 # 配置区
 # ============================
 st.set_page_config(
-    page_title="智能简历筛选系统 v3.20", 
+    page_title="智能简历筛选系统 v4.0", 
     layout="wide", 
     page_icon="📄",
     initial_sidebar_state="collapsed"
@@ -89,6 +98,9 @@ if 'config' not in st.session_state:
 for key in ['uploaded_files_queue', 'processing', 'final_results', 'failed_files', 'need_review']:
     if key not in st.session_state:
         st.session_state[key] = [] if 'queue' in key or 'results' in key or 'files' in key else False
+
+if not OLEFILE_SUPPORT:
+    st.sidebar.warning("未检测到 `olefile` 库，深度 .doc 解析功能已降级。建议执行 `pip install olefile`")
 
 # ============================
 # 缓存系统
@@ -280,14 +292,16 @@ def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False) -> str:
     cache.set(file_bytes, {'pdf_text': result})
     return result
 
+
 # ==========================================
-# 增强强化版：DOCX/DOC 解析 (解决 .doc 表格乱码问题)
+# 终极融合版：DOCX/DOC 解析
+# 结合了 OLE2底层穿透 与 原有的降级回退机制
 # ==========================================
 def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
-    """增强版 DOCX/DOC 解析：处理嵌套表格，暴力重构 .doc 二进制流"""
+    """终极增强版 DOCX/DOC 解析：多路并发降级机制处理"""
     text = ""
     
-    # 1. 优先处理 .docx 格式 (高精度保持段落与表格的顺序)
+    # 【路口1】处理现代 .docx 格式 (高精度保持段落与表格的顺序)
     if DOCX_SUPPORT and file_name.lower().endswith('.docx'):
         try:
             from docx.oxml.table import CT_Tbl
@@ -296,34 +310,69 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
             from docx.text.paragraph import Paragraph
 
             doc = docx.Document(io.BytesIO(file_bytes))
-            
-            # 顺序读取 body 节点
             for child in doc.element.body.iterchildren():
                 if isinstance(child, CT_P):
                     p = Paragraph(child, doc)
-                    if p.text.strip():
-                        text += p.text.strip() + "\n"
+                    if p.text.strip(): text += p.text.strip() + "\n"
                 elif isinstance(child, CT_Tbl):
                     table = Table(child, doc)
                     text += "\n"
                     for i, row in enumerate(table.rows):
-                        # 处理换行，转换成 Markdown 兼容的竖线分割
-                        row_data = [
-                            cell.text.replace('\n', ' ').replace('\r', '').replace('|', '｜').strip() 
-                            for cell in row.cells
-                        ]
+                        row_data = [cell.text.replace('\n', ' ').replace('\r', '').replace('|', '｜').strip() for cell in row.cells]
                         text += "| " + " | ".join(row_data) + " |\n"
-                        # 添加 Markdown 表头底线
-                        if i == 0:
-                            text += "|" + "|".join(["---"] * len(row.cells)) + "|\n"
+                        if i == 0: text += "|" + "|".join(["---"] * len(row.cells)) + "|\n"
                     text += "\n"
-            
-            if len(text.strip()) > 50:
+            if len(text.strip()) > 50: 
                 return text
-        except Exception:
-            pass
+        except Exception: pass
 
-    # 2. 处理旧版 .doc 格式 (尝试借助 antiword, 适合已安装的服务器)
+    # 【路口2】核心增强：利用 olefile 定向解剖原生 .doc (OLE2格式)
+    if file_name.lower().endswith('.doc') and OLEFILE_SUPPORT:
+        bio = io.BytesIO(file_bytes)
+        try:
+            if olefile.isOleFile(bio):
+                with olefile.OleFileIO(bio) as ole:
+                    meta_lines = []
+                    # A. 提取隐藏元数据 (背调辅助)
+                    try:
+                        meta = ole.get_metadata()
+                        if meta.author: meta_lines.append(f"作者: {meta.author.decode('utf-8','ignore') if isinstance(meta.author, bytes) else meta.author}")
+                        if meta.creating_application: meta_lines.append(f"应用: {meta.creating_application.decode('utf-8','ignore') if isinstance(meta.creating_application, bytes) else meta.creating_application}")
+                        if meta.last_printed: meta_lines.append(f"最后打印日期: {meta.last_printed}")
+                    except: pass
+                    
+                    header = "【文档元数据】\n" + "\n".join(meta_lines) + "\n\n【正文提取】\n" if meta_lines else ""
+                    
+                    # B. 定向提取 WordDocument 数据流（绕过图片、对象池）
+                    if ole.exists('WordDocument'):
+                        stream = ole.openstream('WordDocument')
+                        raw_data = stream.read()
+                        
+                        # 解析 FIB (File Information Block) 指针实现物理级穿透
+                        if len(raw_data) > 0x20:
+                            wIdent = struct.unpack('<H', raw_data[0:2])[0]
+                            if wIdent == 0xA5EC: # 合法DOC特征码
+                                fcMin = struct.unpack('<I', raw_data[0x18:0x1C])[0]
+                                mac = struct.unpack('<I', raw_data[0x1C:0x20])[0]
+                                
+                                if fcMin < len(raw_data) and mac <= len(raw_data) and fcMin < mac:
+                                    text_data = raw_data[fcMin:mac]
+                                    # 智能解码：UTF-16LE 对应 Word 的 Unicode 存储，GB18030 对应旧版 ANSI
+                                    try:
+                                        decoded = text_data.decode('utf-16le', errors='ignore')
+                                    except:
+                                        decoded = text_data.decode('gb18030', errors='ignore')
+                                    
+                                    # 表格结构重建：Word 内部 \x07 为单元格界限
+                                    decoded = decoded.replace('\x07\x07', ' |\n| ').replace('\x07', ' | ').replace('\r', '\n')
+                                    # 去噪：剥离不可见字符
+                                    decoded = re.sub(r'[\x00-\x06\x08\x0B\x0C\x0E-\x1F]', '', decoded)
+                                    
+                                    if len(decoded.strip()) > 50:
+                                        return header + decoded.strip()
+        except Exception: pass
+
+    # 【路口3】备用机制：处理服务器级别的旧版 .doc 格式 (借助 antiword)
     if file_name.lower().endswith('.doc'):
         import subprocess
         import tempfile
@@ -339,60 +388,47 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
             try:
                 if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.unlink(tmp_path)
-            except:
-                pass
+            except: pass
 
-    # 3. 终极降级特种部队：纯 Python 暴力穿透法 (解决 \u0007 控制符导致的解析为空)
+    # 【路口4】终极降级特种部队：纯 Python 暴力穿透法
     try:
         best_text = ""
         
-        # 3.1: 尝试识别从招聘平台导出的“伪装 DOC” (实质为 MHT/HTML)
+        # 4.1 尝试识别从招聘平台导出的“伪装 DOC” (实质为 MHT/HTML)
         for enc in ['utf-8', 'gbk', 'gb18030']:
             try:
                 decoded_text = file_bytes.decode(enc)
                 if '<html' in decoded_text.lower() or 'xmlns:w=' in decoded_text.lower():
-                    # 剥离脚本和样式
                     cleaned_html = re.sub(r'<style.*?>.*?</style>', '', decoded_text, flags=re.IGNORECASE|re.DOTALL)
                     cleaned_html = re.sub(r'<script.*?>.*?</script>', '', cleaned_html, flags=re.IGNORECASE|re.DOTALL)
-                    # 将所有 HTML 节点转化为 Markdown 的列状结构
                     cleaned_html = re.sub(r'<[^>]+>', ' | ', cleaned_html)
                     cleaned_html = re.sub(r'(\s*\|\s*)+', ' | ', cleaned_html)
                     if len(cleaned_html.strip()) > len(best_text):
                         best_text = cleaned_html.strip()
-            except:
-                pass
+            except: pass
 
-        # 3.2: 真正的 .doc 二进制流暴力重组
+        # 4.2 真正的 .doc 二进制流盲测暴力重组 (兜底方案)
         for enc in ['utf-16le', 'gbk', 'gb18030', 'utf-8']:
             try:
                 raw_text = file_bytes.decode(enc, errors='ignore')
-                # 过滤掉非打印控制符 (保留 \t(0x09), \n(0x0a), \r(0x0d), 以及最重要的 Word 表格标识 \u0007(0x07))
                 cleaned = re.sub(r'[\x00-\x06\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', raw_text)
-                
-                # 魔改：将内部表格标示符强转为 Markdown 竖杠
-                cleaned = cleaned.replace('\u0007', ' | ')  
-                cleaned = cleaned.replace('\r', '\n')
-                
-                # 视觉重整压缩
+                cleaned = cleaned.replace('\u0007', ' | ').replace('\r', '\n')
                 cleaned = re.sub(r' {2,}', ' ', cleaned)
                 cleaned = re.sub(r'\|\s*\|', '|', cleaned)
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
                 
-                # 校验提取质量（统计包含的中文字符个数，取最优解）
                 zh_count = len(re.findall(r'[\u4e00-\u9fa5]', cleaned))
                 best_zh_count = len(re.findall(r'[\u4e00-\u9fa5]', best_text))
                 
                 if zh_count > best_zh_count and len(cleaned.strip()) > 50:
                     best_text = cleaned
-            except:
-                continue
+            except: continue
         
         if len(best_text.strip()) > 50:
             return best_text
-    except Exception:
-        pass
+    except Exception: pass
 
-    # 4. 最后的退化方案：丢给 Fitz 盲算
+    # 【路口5】最后的退化方案：丢给 Fitz 盲算
     if PDF_SUPPORT:
         try:
             filetype = "doc" if file_name.lower().endswith('.doc') else "docx"
@@ -402,8 +438,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
                     text_fitz += page.get_text() + "\n"
                 if len(text_fitz.strip()) > 50:
                     return text_fitz
-        except Exception:
-            pass
+        except Exception: pass
 
     return text if text.strip() else "Word文档解析失败或内容为空"
 
@@ -951,7 +986,7 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         basic = api_data.get('basic_info', {})
         edu = api_data.get('education', {})
         work = api_data.get('work_experience', {})
-        achieve = data.get('achievements', {}) if 'data' in locals() else api_data.get('achievements', {})
+        achieve = api_data.get('achievements', {})
         ai_eval = api_data.get('ai_assessment', {})
         
         total_score, score_logs = calculate_score(api_data)
@@ -1020,8 +1055,8 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
 # 主界面
 # ============================
 def main():
-    st.title("🎓 智能简历筛选系统 v3.20")
-    st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 DOC底层穿透解析")
+    st.title("🎓 智能简历筛选系统 v4.0")
+    st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 OLE2底层穿透解析")
     
     # 初始化
     for key in ['uploaded_files_queue', 'processing', 'final_results', 'failed_files', 'need_review']:
@@ -1180,7 +1215,7 @@ def main():
             st.metric("平均/最高评分", f"{avg_score:.1f} / {max_score}")
         
         # 评分维度说明
-        with st.expander("📋 评分标准说明 (v3.20 - 合并版)"):
+        with st.expander("📋 评分标准说明 (v4.0 - 合并版)"):
             st.markdown("""
             **评分维度（最大约47分）：**
             - 专业匹配：省级教学竞赛一等奖 +5
