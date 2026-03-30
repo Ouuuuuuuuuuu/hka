@@ -305,7 +305,7 @@ def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, prompt: str = "请
 # 文件解析函数
 # ============================
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_key: str = None) -> str:
+def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> str:
     """从PDF提取文本（带缓存），支持OCR"""
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
@@ -319,8 +319,9 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                 if image_list:
                     image_count += len(image_list)
             
-            # 如果文本太短或检测到图片且启用了OCR，尝试OCR（追加而非替换）
-            if use_ocr and api_key and (len(text.strip()) < 100 or image_count > 0):
+            # 如果开启强制OCR，或文本太短/检测到图片且启用了OCR，尝试OCR
+            should_ocr = use_ocr and api_key and (force_ocr or len(text.strip()) < 100 or image_count > 0)
+            if should_ocr:
                 try:
                     loop = asyncio.get_event_loop()
                 except RuntimeError:
@@ -328,7 +329,11 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                     asyncio.set_event_loop(loop)
                 ocr_text = loop.run_until_complete(ocr_pdf_async(file_bytes, api_key))
                 if not ocr_text.startswith("OCR失败") and not ocr_text.startswith("OCR未识别") and not ocr_text.startswith("OCR不可用"):
-                    text += "\n\n[PDF OCR内容]\n" + ocr_text
+                    if force_ocr:
+                        # 强化模式下直接以OCR结果为主
+                        text = ocr_text
+                    else:
+                        text += "\n\n[PDF OCR内容]\n" + ocr_text
                 else:
                     text += "\n\n[PDF OCR结果: " + ocr_text + "]"
             
@@ -457,13 +462,13 @@ def ocr_docx_images(file_bytes: bytes, api_key: str = None) -> str:
     
     return "\n\n".join(ocr_texts)
 
-def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str = None) -> str:
+def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> str:
     """优先从缓存获取PDF解析结果"""
     cached = cache.get(file_bytes)
     if cached and 'pdf_text' in cached:
         return cached['pdf_text']
     
-    result = extract_text_from_pdf_cached(file_bytes, use_ocr, api_key)
+    result = extract_text_from_pdf_cached(file_bytes, use_ocr, api_key, force_ocr)
     cache.set(file_bytes, {'pdf_text': result})
     return result
 
@@ -520,7 +525,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
                     if not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR"):
                         ocr_text += f"\n--- 第{page_num+1}页 ---\n" + page_text
             if ocr_text.strip():
-                return text + "\n\n[DOCX OCR内容]\n" + ocr_text
+                return ocr_text
         except Exception as e:
             text += f"\n[DOCX OCR尝试失败: {str(e)}]"
 
@@ -741,7 +746,7 @@ class ParseResult:
     file_size: int = 0
     parse_time: float = 0.0
 
-def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) -> ParseResult:
+def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> ParseResult:
     """解析单个文件"""
     start_time = time.time()
     
@@ -760,7 +765,7 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
         error_msg = None
         
         if file_name.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(content_bytes, use_ocr, api_key)
+            text = extract_text_from_pdf(content_bytes, use_ocr, api_key, force_ocr)
         elif file_name.lower().endswith(('.docx', '.doc')):
             text = extract_text_from_docx(content_bytes, file_name, use_ocr, api_key)
             # 如果docx文本太短且启用了OCR，尝试提取嵌入图片OCR（作为补充）
@@ -793,7 +798,7 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
             parse_time=time.time() - start_time
         )
 
-def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = False, api_key: str = None) -> Tuple[List[ParseResult], List[Dict]]:
+def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> Tuple[List[ParseResult], List[Dict]]:
     """批量文件解析，使用线程池并发处理"""
     parsed_data = []
     failed_files = []
@@ -803,7 +808,7 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {
-            executor.submit(parse_single_file, item, use_ocr, api_key): item 
+            executor.submit(parse_single_file, item, use_ocr, api_key, force_ocr): item 
             for item in uploaded_items
         }
         
@@ -1302,8 +1307,11 @@ def main():
             if TESSERACT_SUPPORT:
                 st.caption("📎 本地Tesseract作为备用")
         
+        # 强化读取模式
+        force_ocr = st.checkbox("🔥 强化读取模式", value=False, help="开启后所有PDF强制走OCR，适用于文字层缺失或部分信息无法识别的PDF")
+        
         # Debug模式
-        debug_mode = st.checkbox("🐛 Debug Mode", value=False, help="开启后可在结果中查看原始解析文本和API请求/响应记录")
+        debug_mode = st.checkbox("🐛 Debug Mode", value=False, help="开启后在导出的Excel中附带原始解析文本和API请求/响应记录")
         
         # 显示缓存状态
         if st.session_state.config.get('enable_cache', True):
@@ -1388,7 +1396,7 @@ def main():
         items_to_process = st.session_state.uploaded_files_queue.copy()
         st.session_state.uploaded_files_queue = []
         
-        results = process_all_files(items_to_process, api_key, use_ocr, debug_mode)
+        results = process_all_files(items_to_process, api_key, use_ocr, debug_mode, force_ocr)
         
         if results['final_results']:
             st.session_state.final_results = results['final_results']
@@ -1471,23 +1479,12 @@ def main():
             review_display_cols = [c for c in review_display_cols if c in review_df.columns]
             st.dataframe(review_df[review_display_cols], use_container_width=True)
         
-        # Debug 信息展示
-        if debug_mode and st.session_state.final_results:
-            st.subheader("🐛 Debug 信息")
-            for row in st.session_state.final_results:
-                with st.expander(f"Debug: {row.get('文件名', '')}"):
-                    tab1, tab2, tab3 = st.tabs(["提取文本", "API Prompt", "API Raw Response"])
-                    with tab1:
-                        st.text_area("提取文本", value=row.get('_debug_extracted_text', ''), height=300, key=f"debug_text_{row.get('文件名', '')}")
-                    with tab2:
-                        st.text_area("Prompt", value=row.get('_debug_prompt', ''), height=300, key=f"debug_prompt_{row.get('文件名', '')}")
-                    with tab3:
-                        st.text_area("Raw Response", value=row.get('_debug_raw_response', ''), height=300, key=f"debug_raw_{row.get('文件名', '')}")
+        # Debug 信息不直接展示在UI上，仅保留在导出的Excel中
 
 # ============================
 # 处理逻辑
 # ============================
-def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False):
+def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False, force_ocr=False):
     """处理所有文件的完整流程 - 极速版"""
     total_files = len(uploaded_items)
     results = {
@@ -1516,7 +1513,8 @@ def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False):
                 uploaded_items, 
                 update_parse_progress,
                 use_ocr,
-                api_key  # 传递api_key用于DeepSeek OCR
+                api_key,  # 传递api_key用于DeepSeek OCR
+                force_ocr
             )
             results['parse_time'] = time.time() - start_time
             results['parsed_results'] = parsed_results
