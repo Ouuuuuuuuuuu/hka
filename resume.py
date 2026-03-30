@@ -319,9 +319,18 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                 if image_list:
                     image_count += len(image_list)
             
-            # 如果文本太短或检测到图片且启用了OCR，尝试OCR
+            # 如果文本太短或检测到图片且启用了OCR，尝试OCR（追加而非替换）
             if use_ocr and api_key and (len(text.strip()) < 100 or image_count > 0):
-                text = ocr_pdf(file_bytes, api_key)
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                ocr_text = loop.run_until_complete(ocr_pdf_async(file_bytes, api_key))
+                if not ocr_text.startswith("OCR失败") and not ocr_text.startswith("OCR未识别") and not ocr_text.startswith("OCR不可用"):
+                    text += "\n\n[PDF OCR内容]\n" + ocr_text
+                else:
+                    text += "\n\n[PDF OCR结果: " + ocr_text + "]"
             
             return text
     except Exception as e:
@@ -357,6 +366,50 @@ def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
                     return "OCR不可用: 未配置API Key或安装Tesseract"
                 
                 text += f"\n--- 第{page_num+1}页 ---\n" + page_text
+        
+        return text if text.strip() else "OCR未识别到文字"
+    except Exception as e:
+        return f"OCR失败: {str(e)}"
+
+
+async def ocr_pdf_async(file_bytes: bytes, api_key: str = None) -> str:
+    """对PDF进行异步并发OCR识别 - 优化多页图片PDF处理速度"""
+    text = ""
+    
+    try:
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            semaphore = asyncio.Semaphore(5)  # 单PDF最多5页并发OCR
+            
+            async def ocr_one_page(page_num: int, page):
+                async with semaphore:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("png")
+                    
+                    page_text = ""
+                    if api_key and OCR_ENGINE == "deepseek":
+                        page_text = await deepseek_ocr_image(
+                            img_bytes,
+                            api_key,
+                            prompt="请识别这张简历图片中的所有文字内容，包括姓名、联系方式、教育背景、工作经历等，保持原有格式。"
+                        )
+                        if page_text.startswith("DeepSeek OCR") and TESSERACT_SUPPORT:
+                            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                            page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                    elif TESSERACT_SUPPORT:
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                    else:
+                        return page_num, "OCR不可用"
+                    
+                    return page_num, page_text
+            
+            tasks = [ocr_one_page(i, page) for i, page in enumerate(doc)]
+            page_results = await asyncio.gather(*tasks)
+            page_results.sort(key=lambda x: x[0])
+            
+            for page_num, page_text in page_results:
+                if page_text != "OCR不可用":
+                    text += f"\n--- 第{page_num+1}页 ---\n" + page_text
         
         return text if text.strip() else "OCR未识别到文字"
     except Exception as e:
@@ -419,7 +472,7 @@ def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str
 # 终极融合版：DOCX/DOC 解析
 # 结合了 OLE2底层穿透 与 原有的降级回退机制
 # ==========================================
-def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
+def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool = False, api_key: str = None) -> str:
     """终极增强版 DOCX/DOC 解析：多路并发降级机制处理"""
     text = ""
     
@@ -447,6 +500,29 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "") -> str:
             if len(text.strip()) > 50: 
                 return text
         except Exception: pass
+    
+    # 【路口1.5】图片背景 DOCX 的 OCR 处理（将 DOCX 渲染为图片后识别）
+    if use_ocr and api_key and len(text.strip()) < 100 and file_name.lower().endswith('.docx') and PDF_SUPPORT:
+        try:
+            ocr_text = ""
+            with fitz.open(stream=file_bytes, filetype="docx") as doc:
+                for page_num, page in enumerate(doc):
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("png")
+                    page_text = deepseek_ocr_image_sync(
+                        img_bytes,
+                        api_key,
+                        prompt="请识别这张简历图片中的所有文字内容，包括姓名、联系方式、教育背景、工作经历等，保持原有格式。"
+                    )
+                    if page_text.startswith("DeepSeek OCR") and TESSERACT_SUPPORT:
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                    if not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR"):
+                        ocr_text += f"\n--- 第{page_num+1}页 ---\n" + page_text
+            if ocr_text.strip():
+                return text + "\n\n[DOCX OCR内容]\n" + ocr_text
+        except Exception as e:
+            text += f"\n[DOCX OCR尝试失败: {str(e)}]"
 
     # 【路口2】核心增强：利用 olefile 定向解剖原生 .doc (OLE2格式)
     if file_name.lower().endswith('.doc') and OLEFILE_SUPPORT:
@@ -686,8 +762,8 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
         if file_name.lower().endswith('.pdf'):
             text = extract_text_from_pdf(content_bytes, use_ocr, api_key)
         elif file_name.lower().endswith(('.docx', '.doc')):
-            text = extract_text_from_docx(content_bytes, file_name)
-            # 如果docx文本太短且启用了OCR，尝试提取图片OCR
+            text = extract_text_from_docx(content_bytes, file_name, use_ocr, api_key)
+            # 如果docx文本太短且启用了OCR，尝试提取嵌入图片OCR（作为补充）
             if len(text.strip()) < 100 and use_ocr and api_key:
                 ocr_text = ocr_docx_images(content_bytes, api_key)
                 if ocr_text:
@@ -874,9 +950,12 @@ async def call_deepseek_api_async(
                 for key in ['basic_info', 'education', 'work_experience', 'achievements', 'ai_assessment']:
                     if key not in parsed:
                         parsed[key] = {}
+                # 注入 debug 信息供排查
+                parsed['_debug_prompt'] = system_prompt
+                parsed['_debug_raw_response'] = content
                 return parsed
             except json.JSONDecodeError as e:
-                return {"error": f"JSON解析失败: {str(e)}", "raw_content": content[:500]}
+                return {"error": f"JSON解析失败: {str(e)}", "raw_content": content[:500], "_debug_prompt": system_prompt, "_debug_raw_response": content}
                 
     except asyncio.TimeoutError:
         return {"error": "API请求超时"}
@@ -906,6 +985,7 @@ async def process_batch_async_fast(parsed_results: List[ParseResult], api_key: s
                 results[idx] = {
                     'filename': parse_result.filename,
                     'parsed_content': parse_result.content[:200] + "..." if len(parse_result.content) > 200 else parse_result.content,
+                    'full_content': parse_result.content,
                     'api_result': api_result,
                     'parse_time': parse_result.parse_time,
                     'api_time': time.time() - start_time
@@ -1089,7 +1169,7 @@ def calculate_score(data: Dict) -> Tuple[int, str]:
 # ============================
 # 结果处理
 # ============================
-def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[List[Dict], List[Dict]]:
     """处理API结果，生成最终表格 - v3.20合并版"""
     final_results = []
     need_review = []
@@ -1104,6 +1184,10 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
                 '处理状态': '失败',
                 '错误信息': api_data['error'],
             }
+            if debug_mode:
+                row['_debug_extracted_text'] = result.get('full_content', result.get('parsed_content', ''))
+                row['_debug_prompt'] = api_data.get('_debug_prompt', '')
+                row['_debug_raw_response'] = api_data.get('_debug_raw_response', '')
             final_results.append(row)
             continue
         
@@ -1168,6 +1252,11 @@ def process_results(api_results: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
             '需复核字段': ','.join(review_fields) if needs_review else ''
         }
         
+        if debug_mode:
+            row['_debug_extracted_text'] = result.get('full_content', result.get('parsed_content', ''))
+            row['_debug_prompt'] = api_data.get('_debug_prompt', '')
+            row['_debug_raw_response'] = api_data.get('_debug_raw_response', '')
+        
         final_results.append(row)
         if needs_review:
             need_review.append(row)
@@ -1212,6 +1301,9 @@ def main():
             st.success(f"✅ DeepSeek OCR已就绪")
             if TESSERACT_SUPPORT:
                 st.caption("📎 本地Tesseract作为备用")
+        
+        # Debug模式
+        debug_mode = st.checkbox("🐛 Debug Mode", value=False, help="开启后可在结果中查看原始解析文本和API请求/响应记录")
         
         # 显示缓存状态
         if st.session_state.config.get('enable_cache', True):
@@ -1296,7 +1388,7 @@ def main():
         items_to_process = st.session_state.uploaded_files_queue.copy()
         st.session_state.uploaded_files_queue = []
         
-        results = process_all_files(items_to_process, api_key, use_ocr)
+        results = process_all_files(items_to_process, api_key, use_ocr, debug_mode)
         
         if results['final_results']:
             st.session_state.final_results = results['final_results']
@@ -1378,11 +1470,24 @@ def main():
             review_display_cols = ['文件名', '姓名', '性别', '任教学科', '需复核字段']
             review_display_cols = [c for c in review_display_cols if c in review_df.columns]
             st.dataframe(review_df[review_display_cols], use_container_width=True)
+        
+        # Debug 信息展示
+        if debug_mode and st.session_state.final_results:
+            st.subheader("🐛 Debug 信息")
+            for row in st.session_state.final_results:
+                with st.expander(f"Debug: {row.get('文件名', '')}"):
+                    tab1, tab2, tab3 = st.tabs(["提取文本", "API Prompt", "API Raw Response"])
+                    with tab1:
+                        st.text_area("提取文本", value=row.get('_debug_extracted_text', ''), height=300, key=f"debug_text_{row.get('文件名', '')}")
+                    with tab2:
+                        st.text_area("Prompt", value=row.get('_debug_prompt', ''), height=300, key=f"debug_prompt_{row.get('文件名', '')}")
+                    with tab3:
+                        st.text_area("Raw Response", value=row.get('_debug_raw_response', ''), height=300, key=f"debug_raw_{row.get('文件名', '')}")
 
 # ============================
 # 处理逻辑
 # ============================
-def process_all_files(uploaded_items, api_key, use_ocr=False):
+def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False):
     """处理所有文件的完整流程 - 极速版"""
     total_files = len(uploaded_items)
     results = {
@@ -1453,7 +1558,7 @@ def process_all_files(uploaded_items, api_key, use_ocr=False):
         
         # 阶段3: 结果处理
         with st.spinner('📊 生成报告...'):
-            final_results, need_review = process_results(api_results)
+            final_results, need_review = process_results(api_results, debug_mode)
             results['final_results'] = final_results
             results['need_review'] = need_review
         
