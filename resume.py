@@ -820,7 +820,8 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
                     failed_files.append({
                         'name': result.filename, 
                         'error': result.error,
-                        'size': result.file_size
+                        'size': result.file_size,
+                        'content': result.content
                     })
                     st.write(f"❌ 解析失败: {result.filename} - {result.error}")
                 else:
@@ -831,7 +832,8 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
                 failed_files.append({
                     'name': item.get('name', 'unknown'), 
                     'error': str(e),
-                    'size': len(item.get('bytes', b''))
+                    'size': len(item.get('bytes', b'')),
+                    'content': ''
                 })
                 st.write(f"❌ 解析异常: {item.get('name', 'unknown')} - {str(e)}")
             
@@ -999,6 +1001,7 @@ async def process_batch_async_fast(parsed_results: List[ParseResult], api_key: s
                 results[idx] = {
                     'filename': parse_result.filename,
                     'parsed_content': parse_result.content[:200] if len(parse_result.content) > 200 else parse_result.content,
+                    'full_content': parse_result.content,
                     'api_result': {"error": str(e)},
                     'parse_time': parse_result.parse_time,
                     'api_time': time.time() - start_time
@@ -1557,6 +1560,16 @@ def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False, 
         # 阶段3: 结果处理
         with st.spinner('📊 生成报告...'):
             final_results, need_review = process_results(api_results, debug_mode)
+            # 将解析失败的文件也纳入最终结果，确保用户能看到
+            for fail in failed_parse:
+                fail_row = {
+                    '文件名': fail['name'],
+                    '处理状态': '失败',
+                    '错误信息': fail['error'],
+                }
+                if debug_mode:
+                    fail_row['_debug_extracted_text'] = fail.get('content', '')
+                final_results.append(fail_row)
             results['final_results'] = final_results
             results['need_review'] = need_review
         
