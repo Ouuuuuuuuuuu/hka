@@ -104,6 +104,106 @@ if not OLEFILE_SUPPORT:
     st.sidebar.warning("未检测到 `olefile` 库，深度 .doc 解析功能已降级。建议执行 `pip install olefile`")
 
 # ============================
+# 调试日志系统
+# ============================
+class DebugLogger:
+    """调试日志记录器 - 记录解析和API调用详情"""
+    
+    def __init__(self):
+        self.logs = []
+        self.enabled = True
+    
+    def log_parse(self, filename: str, input_info: dict, output_text: str, success: bool, error: str = None):
+        """记录文件解析日志"""
+        log_entry = {
+            'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+            'type': 'PARSE',
+            'filename': filename,
+            'input': input_info,
+            'output_preview': output_text[:500] + '...' if len(output_text) > 500 else output_text,
+            'output_full': output_text,
+            'success': success,
+            'error': error,
+            'output_length': len(output_text)
+        }
+        self.logs.append(log_entry)
+    
+    def log_api_request(self, filename: str, request_data: dict):
+        """记录API请求"""
+        log_entry = {
+            'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+            'type': 'API_REQUEST',
+            'filename': filename,
+            'model': request_data.get('model', 'unknown'),
+            'prompt_preview': request_data.get('messages', [{}])[0].get('content', '')[:300] + '...' if request_data.get('messages') else 'N/A',
+            'prompt_full': str(request_data.get('messages', [{}])[0].get('content', '')) if request_data.get('messages') else 'N/A',
+            'temperature': request_data.get('temperature'),
+            'max_tokens': request_data.get('max_tokens')
+        }
+        self.logs.append(log_entry)
+    
+    def log_api_response(self, filename: str, response_data: dict, error: str = None):
+        """记录API响应"""
+        if error:
+            log_entry = {
+                'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+                'type': 'API_RESPONSE',
+                'filename': filename,
+                'success': False,
+                'error': error,
+                'response_preview': None,
+                'response_full': None
+            }
+        else:
+            content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '') if isinstance(response_data, dict) else str(response_data)
+            log_entry = {
+                'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+                'type': 'API_RESPONSE',
+                'filename': filename,
+                'success': True,
+                'error': None,
+                'response_preview': content[:500] + '...' if len(content) > 500 else content,
+                'response_full': content,
+                'response_length': len(content)
+            }
+        self.logs.append(log_entry)
+    
+    def log_ocr(self, filename: str, page_num: int, image_size: int, ocr_text: str, success: bool, error: str = None):
+        """记录OCR识别日志"""
+        log_entry = {
+            'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+            'type': 'OCR',
+            'filename': filename,
+            'page_num': page_num,
+            'image_size_kb': image_size / 1024,
+            'ocr_preview': ocr_text[:300] + '...' if len(ocr_text) > 300 else ocr_text,
+            'ocr_full': ocr_text,
+            'success': success,
+            'error': error
+        }
+        self.logs.append(log_entry)
+    
+    def get_logs(self, log_type: str = None, filename: str = None) -> list:
+        """获取日志，支持按类型和文件名筛选"""
+        filtered = self.logs
+        if log_type:
+            filtered = [l for l in filtered if l['type'] == log_type]
+        if filename:
+            filtered = [l for l in filtered if l['filename'] == filename]
+        return filtered
+    
+    def clear(self):
+        """清空日志"""
+        self.logs = []
+    
+    def export_logs(self) -> str:
+        """导出日志为JSON字符串"""
+        return json.dumps(self.logs, ensure_ascii=False, indent=2, default=str)
+
+# 全局调试日志实例
+debug_logger = DebugLogger()
+
+# ============================
 # 缓存系统
 # ============================
 class ResumeCache:
@@ -234,7 +334,7 @@ def get_zip_filenames_raw(zf: zipfile.ZipFile) -> list:
 # ============================
 # DeepSeek OCR 函数 (硅基流动)
 # ============================
-async def deepseek_ocr_image(image_bytes: bytes, api_key: str, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
+async def deepseek_ocr_image(image_bytes: bytes, api_key: str, filename: str = "unknown", page_num: int = 0, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
     """使用DeepSeek OCR API (硅基流动) 识别图片中的文字"""
     import base64
     
@@ -278,27 +378,41 @@ async def deepseek_ocr_image(image_bytes: bytes, api_key: str, prompt: str = "�
         "max_tokens": 4000
     }
     
+    # 记录OCR请求
+    debug_logger.log_api_request(f"{filename}_OCR_Page{page_num}", payload)
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
                 if response.status != 200:
                     error_text = await response.text()
+                    debug_logger.log_api_response(f"{filename}_OCR_Page{page_num}", {}, error=f"HTTP {response.status}: {error_text[:200]}")
+                    debug_logger.log_ocr(filename, page_num, len(image_bytes), "", False, f"HTTP {response.status}")
                     return f"DeepSeek OCR失败 {response.status}: {error_text[:200]}"
                 
                 data = await response.json()
-                return data['choices'][0]['message']['content']
+                result_text = data['choices'][0]['message']['content']
+                
+                # 记录OCR响应和结果
+                debug_logger.log_api_response(f"{filename}_OCR_Page{page_num}", data)
+                debug_logger.log_ocr(filename, page_num, len(image_bytes), result_text, True)
+                
+                return result_text
     except Exception as e:
-        return f"DeepSeek OCR异常: {str(e)}"
+        error_str = str(e)
+        debug_logger.log_api_response(f"{filename}_OCR_Page{page_num}", {}, error=error_str)
+        debug_logger.log_ocr(filename, page_num, len(image_bytes), "", False, error_str)
+        return f"DeepSeek OCR异常: {error_str}"
 
 
-def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
+def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, filename: str = "unknown", page_num: int = 0, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
     """同步版本的DeepSeek OCR"""
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop.run_until_complete(deepseek_ocr_image(image_bytes, api_key, prompt))
+    return loop.run_until_complete(deepseek_ocr_image(image_bytes, api_key, filename, page_num, prompt))
 
 
 # ============================
@@ -321,13 +435,13 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
             
             # 如果文本太短或检测到图片且启用了OCR，尝试OCR
             if use_ocr and api_key and (len(text.strip()) < 100 or image_count > 0):
-                text = ocr_pdf(file_bytes, api_key)
+                text = ocr_pdf(file_bytes, api_key, file_name="cached_pdf")
             
             return text
     except Exception as e:
         return f"PDF解析失败: {str(e)}"
 
-def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
+def ocr_pdf(file_bytes: bytes, api_key: str = None, file_name: str = "unknown") -> str:
     """对PDF进行OCR识别 - 支持DeepSeek OCR和Tesseract"""
     text = ""
     
@@ -344,6 +458,8 @@ def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
                     page_text = deepseek_ocr_image_sync(
                         img_bytes, 
                         api_key, 
+                        filename=file_name,
+                        page_num=page_num + 1,
                         prompt="请识别这张简历图片中的所有文字内容，包括姓名、联系方式、教育背景、工作经历等，保持原有格式。"
                     )
                     # 如果DeepSeek失败，尝试tesseract
@@ -380,7 +496,7 @@ def extract_images_from_docx(file_bytes: bytes) -> List[bytes]:
     return images
 
 
-def ocr_docx_images(file_bytes: bytes, api_key: str = None) -> str:
+def ocr_docx_images(file_bytes: bytes, api_key: str = None, file_name: str = "unknown") -> str:
     """对DOCX中的图片进行OCR识别"""
     if not api_key:
         return ""
@@ -395,6 +511,8 @@ def ocr_docx_images(file_bytes: bytes, api_key: str = None) -> str:
             text = deepseek_ocr_image_sync(
                 img_bytes,
                 api_key,
+                filename=file_name,
+                page_num=i + 1,
                 prompt="请识别这张图片中的所有文字内容，如果是简历内容请完整提取。"
             )
             if not text.startswith("DeepSeek OCR"):
@@ -674,10 +792,18 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
         content_bytes = item.get('bytes', b'')
         file_size = len(content_bytes)
         
+        # 记录解析输入
+        input_info = {
+            'file_size_kb': file_size / 1024,
+            'use_ocr': use_ocr,
+            'has_api_key': api_key is not None
+        }
+        
         cached = cache.get(content_bytes)
         if cached and 'parsed_result' in cached:
             result = cached['parsed_result']
             result.parse_time = time.time() - start_time
+            debug_logger.log_parse(file_name, input_info, result.content, True, "来自缓存")
             return result
         
         text = ""
@@ -689,14 +815,18 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
             text = extract_text_from_docx(content_bytes, file_name)
             # 如果docx文本太短且启用了OCR，尝试提取图片OCR
             if len(text.strip()) < 100 and use_ocr and api_key:
-                ocr_text = ocr_docx_images(content_bytes, api_key)
+                ocr_text = ocr_docx_images(content_bytes, api_key, file_name)
                 if ocr_text:
                     text += "\n\n[图片OCR内容]\n" + ocr_text
         else:
             error_msg = "不支持的文件类型"
         
+        success = len(text) >= 50 and not error_msg
         if len(text) < 50 and not error_msg:
             error_msg = "提取文本过短，可能解析失败"
+        
+        # 记录解析结果
+        debug_logger.log_parse(file_name, input_info, text, success, error_msg)
         
         result = ParseResult(
             filename=file_name,
@@ -710,10 +840,18 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) ->
         return result
         
     except Exception as e:
+        error_str = str(e)
+        debug_logger.log_parse(
+            item.get('name', 'unknown'), 
+            {'file_size_kb': len(item.get('bytes', b'')) / 1024, 'use_ocr': use_ocr},
+            "",
+            False,
+            error_str
+        )
         return ParseResult(
             filename=item.get('name', 'unknown'),
             content="",
-            error=str(e),
+            error=error_str,
             parse_time=time.time() - start_time
         )
 
@@ -849,6 +987,10 @@ async def call_deepseek_api_async(
     if len(text) > 12000:
         truncated_text = text[:6000] + "\n\n[... 中间内容已截断 ...]\n\n" + text[-6000:]
     
+    # 生成唯一标识用于日志追踪
+    import uuid
+    request_id = str(uuid.uuid4())[:8]
+    
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": [
@@ -860,14 +1002,23 @@ async def call_deepseek_api_async(
         "response_format": {"type": "json_object"}
     }
     
+    # 记录API请求 (使用原始文件名+request_id)
+    log_filename = f"{filename[:30]}_{request_id}" if len(filename) > 30 else f"{filename}_{request_id}"
+    debug_logger.log_api_request(log_filename, payload)
+    
     try:
         async with session.post(url, headers=headers, json=payload) as response:
             if response.status != 200:
                 error_text = await response.text()
-                return {"error": f"API错误 {response.status}: {error_text[:200]}"}
+                error_msg = f"API错误 {response.status}: {error_text[:200]}"
+                debug_logger.log_api_response(log_filename, {}, error=error_msg)
+                return {"error": error_msg}
             
             data = await response.json()
             content = data['choices'][0]['message']['content']
+            
+            # 记录API响应
+            debug_logger.log_api_response(log_filename, data)
             
             try:
                 parsed = json.loads(content)
@@ -876,7 +1027,9 @@ async def call_deepseek_api_async(
                         parsed[key] = {}
                 return parsed
             except json.JSONDecodeError as e:
-                return {"error": f"JSON解析失败: {str(e)}", "raw_content": content[:500]}
+                error_msg = f"JSON解析失败: {str(e)}"
+                debug_logger.log_api_response(log_filename, {}, error=f"{error_msg}, content: {content[:500]}")
+                return {"error": error_msg, "raw_content": content[:500]}
                 
     except asyncio.TimeoutError:
         return {"error": "API请求超时"}
@@ -1314,6 +1467,106 @@ def main():
             file_name=f"简历筛选结果_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    
+    st.divider()
+    
+    # ========== 调试面板 ==========
+    with st.expander("🔧 调试面板 (查看解析和API详情)", expanded=False):
+        st.subheader("调试控制")
+        
+        debug_col1, debug_col2, debug_col3 = st.columns(3)
+        with debug_col1:
+            if st.button("🗑️ 清空调试日志"):
+                debug_logger.clear()
+                st.success("调试日志已清空")
+                st.rerun()
+        with debug_col2:
+            if debug_logger.logs:
+                st.download_button(
+                    "📥 导出调试日志",
+                    data=debug_logger.export_logs(),
+                    file_name=f"debug_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+        with debug_col3:
+            st.caption(f"当前日志数: {len(debug_logger.logs)}")
+        
+        st.divider()
+        
+        # 按文件名筛选
+        all_filenames = list(set([log['filename'] for log in debug_logger.logs]))
+        if all_filenames:
+            selected_file = st.selectbox("选择文件查看详情", ["全部"] + all_filenames)
+        else:
+            selected_file = "全部"
+        
+        # 按类型筛选
+        log_types = ["全部", "PARSE", "API_REQUEST", "API_RESPONSE", "OCR"]
+        selected_type = st.selectbox("日志类型", log_types)
+        
+        # 显示日志
+        filtered_logs = debug_logger.get_logs(
+            log_type=selected_type if selected_type != "全部" else None,
+            filename=selected_file if selected_file != "全部" else None
+        )
+        
+        if not filtered_logs:
+            st.info("暂无日志记录")
+        else:
+            for i, log in enumerate(reversed(filtered_logs[-50:])):  # 显示最近50条
+                with st.container():
+                    log_color = {
+                        'PARSE': '📄',
+                        'API_REQUEST': '📤',
+                        'API_RESPONSE': '📥',
+                        'OCR': '👁️'
+                    }.get(log['type'], '📝')
+                    
+                    success_marker = "✅" if log.get('success', True) else "❌"
+                    
+                    with st.expander(f"{log_color} [{log['timestamp']}] {log['type']} - {log['filename'][:40]} {success_marker}"):
+                        if log['type'] == 'PARSE':
+                            st.write("**输入信息:**")
+                            st.json(log.get('input', {}))
+                            st.write(f"**输出长度:** {log.get('output_length', 0)} 字符")
+                            st.write("**输出内容 (预览):**")
+                            st.code(log.get('output_preview', 'N/A'))
+                            if log.get('error'):
+                                st.error(f"错误: {log['error']}")
+                            
+                            # 显示完整内容按钮
+                            if st.checkbox(f"显示完整内容 #{i}", key=f"full_content_{i}"):
+                                st.text_area("完整内容", log.get('output_full', ''), height=300)
+                        
+                        elif log['type'] == 'API_REQUEST':
+                            st.write(f"**模型:** {log.get('model', 'unknown')}")
+                            st.write(f"**温度:** {log.get('temperature')}, **最大Token:** {log.get('max_tokens')}")
+                            st.write("**Prompt预览:**")
+                            st.code(log.get('prompt_preview', 'N/A'))
+                            if st.checkbox(f"显示完整Prompt #{i}", key=f"full_prompt_{i}"):
+                                st.text_area("完整Prompt", log.get('prompt_full', ''), height=300)
+                        
+                        elif log['type'] == 'API_RESPONSE':
+                            if log.get('error'):
+                                st.error(f"**错误:** {log['error']}")
+                            else:
+                                st.write(f"**响应长度:** {log.get('response_length', 0)} 字符")
+                                st.write("**响应内容 (预览):**")
+                                st.code(log.get('response_preview', 'N/A'))
+                                if st.checkbox(f"显示完整响应 #{i}", key=f"full_response_{i}"):
+                                    st.text_area("完整响应", log.get('response_full', ''), height=300)
+                        
+                        elif log['type'] == 'OCR':
+                            st.write(f"**页码:** {log.get('page_num', 'N/A')}")
+                            st.write(f"**图片大小:** {log.get('image_size_kb', 0):.1f} KB")
+                            if log.get('error'):
+                                st.error(f"**错误:** {log['error']}")
+                            else:
+                                st.write("**OCR结果:**")
+                                st.code(log.get('ocr_preview', 'N/A'))
+                                if st.checkbox(f"显示完整OCR结果 #{i}", key=f"full_ocr_{i}"):
+                                    st.text_area("完整OCR结果", log.get('ocr_full', ''), height=300)
+                st.divider()
     
     st.divider()
     
