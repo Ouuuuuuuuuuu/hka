@@ -928,15 +928,11 @@ async def call_deepseek_api_async(
     }}
 }}"""
     
-    truncated_text = text
-    if len(text) > 12000:
-        truncated_text = text[:6000] + "\n\n[... 中间内容已截断 ...]\n\n" + text[-6000:]
-    
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"请分析以下简历：\n\n{truncated_text}"}
+            {"role": "user", "content": f"请分析以下简历：\n\n{text}"}
         ],
         "temperature": 0.3,
         "max_tokens": 2000,
