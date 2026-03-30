@@ -56,20 +56,21 @@ try:
 except ImportError:
     SEVENZ_SUPPORT = False
 
-# OCR 支持（可选）
-OCR_SUPPORT = False
-OCR_ERROR_MSG = ""
+# OCR 支持（可选）- 使用DeepSeek OCR API via 硅基流动
+OCR_SUPPORT = True  # 默认启用DeepSeek OCR
+OCR_ENGINE = "deepseek"  # 默认使用deepseek-ocr
+
 try:
     import pytesseract
     from PIL import Image
     # 测试OCR是否真正可用
     try:
         pytesseract.get_tesseract_version()
-        OCR_SUPPORT = True
-    except Exception as e:
-        OCR_ERROR_MSG = f"OCR引擎未正确安装: {str(e)}"
-except ImportError as e:
-    OCR_ERROR_MSG = f"pytesseract未安装: {str(e)}"
+        TESSERACT_SUPPORT = True
+    except Exception:
+        TESSERACT_SUPPORT = False
+except ImportError:
+    TESSERACT_SUPPORT = False
 
 # ============================
 # 配置区
@@ -231,50 +232,185 @@ def get_zip_filenames_raw(zf: zipfile.ZipFile) -> list:
     return result
 
 # ============================
+# DeepSeek OCR 函数 (硅基流动)
+# ============================
+async def deepseek_ocr_image(image_bytes: bytes, api_key: str, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
+    """使用DeepSeek OCR API (硅基流动) 识别图片中的文字"""
+    import base64
+    
+    url = "https://api.siliconflow.cn/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # 将图片转换为base64
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # 检测图片格式
+    image_format = "png"
+    if image_bytes[:2] == b'\xff\xd8':
+        image_format = "jpeg"
+    elif image_bytes[:4] == b'\x89PNG':
+        image_format = "png"
+    elif image_bytes[:4] == b'GIF8':
+        image_format = "gif"
+    elif image_bytes[:4] == b'RIFF':
+        image_format = "webp"
+    
+    payload = {
+        "model": "deepseek-ai/DeepSeek-OCR",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/{image_format};base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4000
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return f"DeepSeek OCR失败 {response.status}: {error_text[:200]}"
+                
+                data = await response.json()
+                return data['choices'][0]['message']['content']
+    except Exception as e:
+        return f"DeepSeek OCR异常: {str(e)}"
+
+
+def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
+    """同步版本的DeepSeek OCR"""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(deepseek_ocr_image(image_bytes, api_key, prompt))
+
+
+# ============================
 # 文件解析函数
 # ============================
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False) -> str:
+def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_key: str = None) -> str:
     """从PDF提取文本（带缓存），支持OCR"""
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             text = ""
+            image_count = 0
             for page in doc:
-                text += page.get_text() + "\n"
+                page_text = page.get_text()
+                text += page_text + "\n"
+                # 检测页面中是否有图片
+                image_list = page.get_images()
+                if image_list:
+                    image_count += len(image_list)
             
-            # 如果文本太短且启用了OCR，尝试OCR
-            if len(text.strip()) < 50 and use_ocr and OCR_SUPPORT:
-                text = ocr_pdf(file_bytes)
+            # 如果文本太短或检测到图片且启用了OCR，尝试OCR
+            if use_ocr and api_key and (len(text.strip()) < 100 or image_count > 0):
+                text = ocr_pdf(file_bytes, api_key)
             
             return text
     except Exception as e:
         return f"PDF解析失败: {str(e)}"
 
-def ocr_pdf(file_bytes: bytes) -> str:
-    """对PDF进行OCR识别"""
-    if not OCR_SUPPORT:
-        return f"OCR未安装或不可用: {OCR_ERROR_MSG}"
-    
+def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
+    """对PDF进行OCR识别 - 支持DeepSeek OCR和Tesseract"""
     text = ""
+    
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page_num, page in enumerate(doc):
+                # 将页面渲染为高清图片
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                img_bytes = pix.tobytes("png")
+                
+                page_text = ""
+                # 优先使用DeepSeek OCR API
+                if api_key and OCR_ENGINE == "deepseek":
+                    page_text = deepseek_ocr_image_sync(
+                        img_bytes, 
+                        api_key, 
+                        prompt="请识别这张简历图片中的所有文字内容，包括姓名、联系方式、教育背景、工作经历等，保持原有格式。"
+                    )
+                    # 如果DeepSeek失败，尝试tesseract
+                    if page_text.startswith("DeepSeek OCR") and TESSERACT_SUPPORT:
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                elif TESSERACT_SUPPORT:
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                else:
+                    return "OCR不可用: 未配置API Key或安装Tesseract"
+                
                 text += f"\n--- 第{page_num+1}页 ---\n" + page_text
         
         return text if text.strip() else "OCR未识别到文字"
     except Exception as e:
         return f"OCR失败: {str(e)}"
 
-def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False) -> str:
+
+def extract_images_from_docx(file_bytes: bytes) -> List[bytes]:
+    """从DOCX文件中提取图片"""
+    images = []
+    try:
+        import zipfile
+        from io import BytesIO
+        
+        # DOCX实际上是zip文件
+        with zipfile.ZipFile(BytesIO(file_bytes), 'r') as zf:
+            for name in zf.namelist():
+                if name.startswith('word/media/'):
+                    images.append(zf.read(name))
+    except Exception:
+        pass
+    return images
+
+
+def ocr_docx_images(file_bytes: bytes, api_key: str = None) -> str:
+    """对DOCX中的图片进行OCR识别"""
+    if not api_key:
+        return ""
+    
+    images = extract_images_from_docx(file_bytes)
+    if not images:
+        return ""
+    
+    ocr_texts = []
+    for i, img_bytes in enumerate(images[:10]):  # 最多处理10张图片
+        try:
+            text = deepseek_ocr_image_sync(
+                img_bytes,
+                api_key,
+                prompt="请识别这张图片中的所有文字内容，如果是简历内容请完整提取。"
+            )
+            if not text.startswith("DeepSeek OCR"):
+                ocr_texts.append(f"[图片{i+1}]\n{text}")
+        except Exception:
+            continue
+    
+    return "\n\n".join(ocr_texts)
+
+def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str = None) -> str:
     """优先从缓存获取PDF解析结果"""
     cached = cache.get(file_bytes)
     if cached and 'pdf_text' in cached:
         return cached['pdf_text']
     
-    result = extract_text_from_pdf_cached(file_bytes, use_ocr)
+    result = extract_text_from_pdf_cached(file_bytes, use_ocr, api_key)
     cache.set(file_bytes, {'pdf_text': result})
     return result
 
@@ -529,7 +665,7 @@ class ParseResult:
     file_size: int = 0
     parse_time: float = 0.0
 
-def parse_single_file(item: Dict, use_ocr: bool = False) -> ParseResult:
+def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None) -> ParseResult:
     """解析单个文件"""
     start_time = time.time()
     
@@ -548,9 +684,14 @@ def parse_single_file(item: Dict, use_ocr: bool = False) -> ParseResult:
         error_msg = None
         
         if file_name.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(content_bytes, use_ocr)
+            text = extract_text_from_pdf(content_bytes, use_ocr, api_key)
         elif file_name.lower().endswith(('.docx', '.doc')):
             text = extract_text_from_docx(content_bytes, file_name)
+            # 如果docx文本太短且启用了OCR，尝试提取图片OCR
+            if len(text.strip()) < 100 and use_ocr and api_key:
+                ocr_text = ocr_docx_images(content_bytes, api_key)
+                if ocr_text:
+                    text += "\n\n[图片OCR内容]\n" + ocr_text
         else:
             error_msg = "不支持的文件类型"
         
@@ -576,7 +717,7 @@ def parse_single_file(item: Dict, use_ocr: bool = False) -> ParseResult:
             parse_time=time.time() - start_time
         )
 
-def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = False) -> Tuple[List[ParseResult], List[Dict]]:
+def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = False, api_key: str = None) -> Tuple[List[ParseResult], List[Dict]]:
     """批量文件解析，使用线程池并发处理"""
     parsed_data = []
     failed_files = []
@@ -586,7 +727,7 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {
-            executor.submit(parse_single_file, item, use_ocr): item 
+            executor.submit(parse_single_file, item, use_ocr, api_key): item 
             for item in uploaded_items
         }
         
@@ -641,8 +782,14 @@ async def call_deepseek_api_async(
         pass
     city_context = f"目标城市：{target_city}" if target_city else ""
     
+    # 获取当前年份用于年龄计算
+    current_year = datetime.now().year
+    current_date = datetime.now().strftime("%Y年%m月%d日")
+    
     system_prompt = f"""你是一个专业的HR简历分析助手。请从简历文本中提取结构化信息。
 {city_context}
+
+【重要提示】今天是{current_date}，当前年份是{current_year}年。计算年龄时必须使用当前年份{current_year}减去出生年份。例如：2005年出生的人，年龄应该是{current_year - 2005}岁。
 
 【重要】学校层次字段（tier）只能从以下选项中选择：
 - C9（九校联盟）
@@ -661,7 +808,7 @@ async def call_deepseek_api_async(
     "basic_info": {{
         "name": "姓名",
         "gender": "性别(男/女)",
-        "age": "年龄(数字)",
+        "age": "年龄(数字，根据当前年份{current_year}计算)",
         "subject": "任教学科",
         "marital_status": "婚育状况(已婚已育/已婚未育/未婚/未提及)",
         "residence": "现居住城市",
@@ -1060,12 +1207,11 @@ def main():
         )
     with col2:
         # OCR选项
-        use_ocr = st.checkbox("启用OCR（识别图片型PDF）", value=False)
+        use_ocr = st.checkbox("启用OCR（识别图片型PDF/DOCX）", value=False)
         if use_ocr:
-            if OCR_SUPPORT:
-                st.success("✅ OCR已就绪")
-            else:
-                st.warning(f"⚠️ {OCR_ERROR_MSG}")
+            st.success(f"✅ DeepSeek OCR已就绪")
+            if TESSERACT_SUPPORT:
+                st.caption("📎 本地Tesseract作为备用")
         
         # 显示缓存状态
         if st.session_state.config.get('enable_cache', True):
@@ -1264,7 +1410,8 @@ def process_all_files(uploaded_items, api_key, use_ocr=False):
             parsed_results, failed_parse = parse_files_batch(
                 uploaded_items, 
                 update_parse_progress,
-                use_ocr
+                use_ocr,
+                api_key  # 传递api_key用于DeepSeek OCR
             )
             results['parse_time'] = time.time() - start_time
             results['parsed_results'] = parsed_results
