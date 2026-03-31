@@ -552,6 +552,80 @@ def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str
 
 
 # ==========================================
+# 文本去重工具函数
+# ==========================================
+def deduplicate_text(text: str) -> str:
+    """
+    去除文本中的连续重复段落。
+    某些简历DOCX文件中内容会被重复多次（如文本框+正文同时存在），
+    此函数用于去除这些重复，保留第一次出现的内容。
+    """
+    if not text or len(text) < 50:
+        return text
+    
+    lines = text.split('\n')
+    seen_paragraphs = set()
+    result_lines = []
+    
+    def normalize(s: str) -> str:
+        """归一化字符串用于比较"""
+        # 去除所有空白字符和常见标点
+        return re.sub(r'[\s\/\.\,\:\;\、\，。\(\)（）@\-]', '', s)
+    
+    def is_similar(s1: str, s2: str) -> bool:
+        """检查两个字符串是否相似（用于检测重复内容）"""
+        if not s1 or not s2:
+            return False
+        n1, n2 = normalize(s1), normalize(s2)
+        # 如果归一化后完全相同，则是重复
+        if n1 == n2:
+            return True
+        # 如果一个是另一个的子串且长度超过80%，也认为是重复
+        if len(n1) > 50 and len(n2) > 50:
+            if n1 in n2 or n2 in n1:
+                return True
+            # 计算相似度（共同子串长度比例）
+            shorter, longer = (n1, n2) if len(n1) < len(n2) else (n2, n1)
+            if len(longer) > 0 and len(shorter) / len(longer) > 0.8:
+                # 检查shorter是否是longer的前缀或后缀
+                if longer.startswith(shorter) or longer.endswith(shorter):
+                    return True
+        return False
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result_lines.append(line)
+            continue
+        
+        # 对短行（少于20字符）使用精确匹配
+        if len(stripped) < 20:
+            key = stripped
+            if key not in seen_paragraphs:
+                seen_paragraphs.add(key)
+                result_lines.append(line)
+        else:
+            # 对长行使用相似度匹配
+            # 首先检查归一化后是否已存在
+            norm_key = normalize(stripped)
+            if norm_key in seen_paragraphs:
+                continue  # 跳过重复
+            
+            # 检查是否与已见过的长行相似
+            is_dup = False
+            for seen in list(seen_paragraphs):
+                if len(seen) > 50 and is_similar(stripped, seen):
+                    is_dup = True
+                    break
+            
+            if not is_dup:
+                seen_paragraphs.add(norm_key)
+                result_lines.append(line)
+    
+    return '\n'.join(result_lines)
+
+
+# ==========================================
 # 终极融合版：DOCX/DOC 解析
 # 结合了 OLE2底层穿透 与 原有的降级回退机制
 # ==========================================
@@ -560,28 +634,71 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
     text = ""
     
     # 【路口1】处理现代 .docx 格式 (高精度保持段落与表格的顺序)
+    # 增强版：提取文本框内容，处理简历模板中常见的文本框结构
     if DOCX_SUPPORT and file_name.lower().endswith('.docx'):
         try:
             from docx.oxml.table import CT_Tbl
             from docx.oxml.text.paragraph import CT_P
             from docx.table import Table
             from docx.text.paragraph import Paragraph
-
+            
             doc = docx.Document(io.BytesIO(file_bytes))
+            
+            # 方法1: 标准遍历（段落+表格）
+            lines = []
             for child in doc.element.body.iterchildren():
                 if isinstance(child, CT_P):
                     p = Paragraph(child, doc)
-                    if p.text.strip(): text += p.text.strip() + "\n"
+                    if p.text.strip():
+                        lines.append(p.text.strip())
                 elif isinstance(child, CT_Tbl):
                     table = Table(child, doc)
-                    text += "\n"
+                    lines.append("")
                     for i, row in enumerate(table.rows):
                         row_data = [cell.text.replace('\n', ' ').replace('\r', '').replace('|', '｜').strip() for cell in row.cells]
-                        text += "| " + " | ".join(row_data) + " |\n"
-                        if i == 0: text += "|" + "|".join(["---"] * len(row.cells)) + "|\n"
-                    text += "\n"
+                        lines.append("| " + " | ".join(row_data) + " |")
+                        if i == 0:
+                            lines.append("|" + "|".join(["---"] * len(row.cells)) + "|")
+                    lines.append("")
+            
+            text = "\n".join(lines)
+            
+            # 方法2: 如果标准方法提取内容太少，尝试提取文本框
+            if len(text.strip()) < 100:
+                # 使用底层XML提取文本框内容
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(doc.element.xml)
+                    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                    
+                    txbx_lines = []
+                    # 查找所有文本框内容
+                    for txbx in root.findall('.//w:txbxContent', ns):
+                        txbx_texts = []
+                        for t in txbx.findall('.//w:t', ns):
+                            if t.text:
+                                txbx_texts.append(t.text)
+                        if txbx_texts:
+                            txbx_lines.append(''.join(txbx_texts))
+                    
+                    # 也查找所有段落（包括文本框外的）
+                    for p in root.findall('.//w:p', ns):
+                        p_texts = []
+                        for t in p.findall('.//w:t', ns):
+                            if t.text:
+                                p_texts.append(t.text)
+                        if p_texts:
+                            line = ''.join(p_texts).strip()
+                            if line and line not in txbx_lines:  # 避免重复
+                                txbx_lines.append(line)
+                    
+                    if len('\n'.join(txbx_lines).strip()) > 50:
+                        text = '\n'.join(txbx_lines)
+                except Exception:
+                    pass
+            
             if len(text.strip()) > 50: 
-                return text
+                return deduplicate_text(text)
         except Exception: pass
     
     # 【路口1.5】图片背景 DOCX 的 OCR 处理（将 DOCX 渲染为图片后识别）
@@ -603,7 +720,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
                     if page_text and not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR") and len(page_text.strip()) > 10:
                         ocr_text += f"\n--- 第{page_num+1}页 ---\n" + page_text
             if ocr_text.strip():
-                return ocr_text.strip()
+                return deduplicate_text(ocr_text.strip())
         except Exception as e:
             text += f"\n[DOCX OCR尝试失败: {str(e)}]"
 
@@ -650,7 +767,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
                                     decoded = re.sub(r'[\x00-\x06\x08\x0B\x0C\x0E-\x1F]', '', decoded)
                                     
                                     if len(decoded.strip()) > 50:
-                                        return header + decoded.strip()
+                                        return deduplicate_text(header + decoded.strip())
         except Exception: pass
 
     # 【路口3】备用机制：处理服务器级别的旧版 .doc 格式 (借助 antiword)
@@ -664,7 +781,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
             result = subprocess.run(['antiword', tmp_path], capture_output=True, text=True, timeout=10)
             os.unlink(tmp_path)
             if result.returncode == 0 and len(result.stdout.strip()) > 50:
-                return result.stdout
+                return deduplicate_text(result.stdout)
         except Exception:
             try:
                 if 'tmp_path' in locals() and os.path.exists(tmp_path):
@@ -706,7 +823,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
             except: continue
         
         if len(best_text.strip()) > 50:
-            return best_text
+            return deduplicate_text(best_text)
     except Exception: pass
 
     # 【路口5】最后的退化方案：丢给 Fitz 盲算
@@ -718,10 +835,10 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
                 for page in doc_fitz:
                     text_fitz += page.get_text() + "\n"
                 if len(text_fitz.strip()) > 50:
-                    return text_fitz
+                    return deduplicate_text(text_fitz)
         except Exception: pass
 
-    return text if text.strip() else "Word文档解析失败或内容为空"
+    return deduplicate_text(text) if text.strip() else "Word文档解析失败或内容为空"
 
 def is_hidden_file(filename: str) -> bool:
     """检查是否为隐藏文件"""
