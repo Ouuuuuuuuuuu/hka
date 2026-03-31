@@ -232,6 +232,55 @@ def get_zip_filenames_raw(zf: zipfile.ZipFile) -> list:
     return result
 
 # ============================
+# OCR 后处理清洗
+# ============================
+def clean_ocr_text(text: str) -> str:
+    """清洗OCR结果中的坐标标签、HTML标签、孤立符号和重复内容"""
+    if not text or text.startswith("DeepSeek OCR") or text.startswith("OCR"):
+        return text
+    
+    # 1. 移除 DeepSeek OCR 的坐标标签: <|ref|>title<|/ref|><|det|>[[...]]<|/det|>
+    text = re.sub(r'<\|ref\|>.*?<\|/ref\|>', '', text)
+    text = re.sub(r'<\|det\|>\[\[.*?\]\]<\|/det\|>', '', text)
+    text = re.sub(r'<\|ref\|>|<\|/ref\|>|<\|det\|>|<\|/det\|>', '', text)
+    
+    # 2. 将 <br> 替换为换行
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    
+    # 3. 移除孤立垃圾符号行（行内几乎没有有效字符）
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 如果一行里有效字符（中文、英文单词、数字）少于2个，且长度很短，则丢弃
+        valid_chars = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]', stripped)
+        if len(valid_chars) < 2 and len(stripped) <= 5:
+            continue
+        # 过滤没有中文且以特殊符号开头的短垃圾行（如 -responsive., np., ҳ ）
+        if len(re.findall(r'[\u4e00-\u9fa5]', stripped)) == 0 and re.match(r'^[^a-zA-Z0-9]', stripped) and len(stripped) <= 20:
+            continue
+        cleaned_lines.append(line)
+    
+    # 4. 去重：连续完全相同的行最多保留2次
+    deduped_lines = []
+    prev_line = None
+    repeat_count = 0
+    for line in cleaned_lines:
+        if line == prev_line:
+            repeat_count += 1
+            if repeat_count <= 1:
+                deduped_lines.append(line)
+        else:
+            repeat_count = 0
+            prev_line = line
+            deduped_lines.append(line)
+    
+    return '\n'.join(deduped_lines)
+
+
+# ============================
 # DeepSeek OCR 函数 (硅基流动)
 # ============================
 async def deepseek_ocr_image(image_bytes: bytes, api_key: str, prompt: str = "请识别图片中的所有文字内容，保持原有格式和排版。") -> str:
@@ -286,7 +335,7 @@ async def deepseek_ocr_image(image_bytes: bytes, api_key: str, prompt: str = "�
                     return f"DeepSeek OCR失败 {response.status}: {error_text[:200]}"
                 
                 data = await response.json()
-                return data['choices'][0]['message']['content']
+                return clean_ocr_text(data['choices'][0]['message']['content'])
     except Exception as e:
         return f"DeepSeek OCR异常: {str(e)}"
 
@@ -298,7 +347,7 @@ def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, prompt: str = "请
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop.run_until_complete(deepseek_ocr_image(image_bytes, api_key, prompt))
+    return clean_ocr_text(loop.run_until_complete(deepseek_ocr_image(image_bytes, api_key, prompt)))
 
 
 # ============================
@@ -337,6 +386,12 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                 else:
                     text += "\n\n[PDF OCR结果: " + ocr_text + "]"
             
+            # 针对混合PDF（文字层完整但顶部姓名/标题为图片）进行顶部OCR补充
+            if use_ocr and api_key and not force_ocr and len(text.strip()) > 100:
+                top_ocr_text = ocr_pdf_top_region(file_bytes, api_key)
+                if top_ocr_text and not top_ocr_text.startswith("顶部OCR失败") and len(top_ocr_text.strip()) > 10:
+                    text = "[PDF顶部补充OCR]\n" + top_ocr_text + "\n\n[PDF正文提取]\n" + text
+            
             return text
     except Exception as e:
         return f"PDF解析失败: {str(e)}"
@@ -349,7 +404,7 @@ def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page_num, page in enumerate(doc):
                 # 将页面渲染为高清图片
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
                 img_bytes = pix.tobytes("png")
                 
                 page_text = ""
@@ -370,11 +425,34 @@ def ocr_pdf(file_bytes: bytes, api_key: str = None) -> str:
                 else:
                     return "OCR不可用: 未配置API Key或安装Tesseract"
                 
-                text += f"\n--- 第{page_num+1}页 ---\n" + page_text
+                if page_text.strip() and len(page_text.strip()) > 10:
+                    text += f"\n--- 第{page_num+1}页 ---\n" + page_text
         
         return text if text.strip() else "OCR未识别到文字"
     except Exception as e:
         return f"OCR失败: {str(e)}"
+
+
+def ocr_pdf_top_region(file_bytes: bytes, api_key: str = None) -> str:
+    """对PDF每页顶部区域进行OCR补充，用于捕获混合PDF中的图片型标题/姓名"""
+    text = ""
+    try:
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            for page_num, page in enumerate(doc):
+                rect = page.rect
+                top_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height * 0.30)
+                pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=top_rect)
+                img_bytes = pix.tobytes("png")
+                page_text = deepseek_ocr_image_sync(
+                    img_bytes,
+                    api_key,
+                    prompt="请识别这张简历图片顶部的文字内容，包括姓名、联系方式、标题等，保持原有格式。"
+                )
+                if page_text and not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR") and len(page_text.strip()) > 5:
+                    text += f"\n--- 第{page_num+1}页顶部 ---\n" + page_text
+        return text
+    except Exception as e:
+        return f"顶部OCR失败: {str(e)}"
 
 
 async def ocr_pdf_async(file_bytes: bytes, api_key: str = None) -> str:
@@ -387,7 +465,7 @@ async def ocr_pdf_async(file_bytes: bytes, api_key: str = None) -> str:
             
             async def ocr_one_page(page_num: int, page):
                 async with semaphore:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
                     img_bytes = pix.tobytes("png")
                     
                     page_text = ""
@@ -413,7 +491,7 @@ async def ocr_pdf_async(file_bytes: bytes, api_key: str = None) -> str:
             page_results.sort(key=lambda x: x[0])
             
             for page_num, page_text in page_results:
-                if page_text != "OCR不可用":
+                if page_text != "OCR不可用" and page_text.strip() and len(page_text.strip()) > 10:
                     text += f"\n--- 第{page_num+1}页 ---\n" + page_text
         
         return text if text.strip() else "OCR未识别到文字"
@@ -512,7 +590,7 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
             ocr_text = ""
             with fitz.open(stream=file_bytes, filetype="docx") as doc:
                 for page_num, page in enumerate(doc):
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
                     img_bytes = pix.tobytes("png")
                     page_text = deepseek_ocr_image_sync(
                         img_bytes,
@@ -522,10 +600,10 @@ def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool
                     if page_text.startswith("DeepSeek OCR") and TESSERACT_SUPPORT:
                         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                         page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
-                    if not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR"):
+                    if page_text and not page_text.startswith("DeepSeek OCR") and not page_text.startswith("OCR") and len(page_text.strip()) > 10:
                         ocr_text += f"\n--- 第{page_num+1}页 ---\n" + page_text
             if ocr_text.strip():
-                return ocr_text
+                return ocr_text.strip()
         except Exception as e:
             text += f"\n[DOCX OCR尝试失败: {str(e)}]"
 
