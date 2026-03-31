@@ -354,7 +354,7 @@ def deepseek_ocr_image_sync(image_bytes: bytes, api_key: str, prompt: str = "请
 # 文件解析函数
 # ============================
 @st.cache_data(ttl=3600, show_spinner=False)
-def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> str:
+def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = True, api_key: str = None) -> str:
     """从PDF提取文本（带缓存），支持OCR"""
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
@@ -368,8 +368,8 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                 if image_list:
                     image_count += len(image_list)
             
-            # 如果开启强制OCR，或文本太短/检测到图片且启用了OCR，尝试OCR
-            should_ocr = use_ocr and api_key and (force_ocr or len(text.strip()) < 100 or image_count > 0)
+            # 如果启用了OCR且文本太短/检测到图片，尝试OCR
+            should_ocr = use_ocr and api_key and (len(text.strip()) < 100 or image_count > 0)
             if should_ocr:
                 try:
                     loop = asyncio.get_event_loop()
@@ -378,16 +378,12 @@ def extract_text_from_pdf_cached(file_bytes: bytes, use_ocr: bool = False, api_k
                     asyncio.set_event_loop(loop)
                 ocr_text = loop.run_until_complete(ocr_pdf_async(file_bytes, api_key))
                 if not ocr_text.startswith("OCR失败") and not ocr_text.startswith("OCR未识别") and not ocr_text.startswith("OCR不可用"):
-                    if force_ocr:
-                        # 强化模式下直接以OCR结果为主
-                        text = ocr_text
-                    else:
-                        text += "\n\n[PDF OCR内容]\n" + ocr_text
+                    text += "\n\n[PDF OCR内容]\n" + ocr_text
                 else:
                     text += "\n\n[PDF OCR结果: " + ocr_text + "]"
             
             # 针对混合PDF（文字层完整但顶部姓名/标题为图片）进行顶部OCR补充
-            if use_ocr and api_key and not force_ocr and len(text.strip()) > 100:
+            if use_ocr and api_key and len(text.strip()) > 100:
                 top_ocr_text = ocr_pdf_top_region(file_bytes, api_key)
                 if top_ocr_text and not top_ocr_text.startswith("顶部OCR失败") and len(top_ocr_text.strip()) > 10:
                     text = "[PDF顶部补充OCR]\n" + top_ocr_text + "\n\n[PDF正文提取]\n" + text
@@ -540,13 +536,13 @@ def ocr_docx_images(file_bytes: bytes, api_key: str = None) -> str:
     
     return "\n\n".join(ocr_texts)
 
-def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> str:
+def extract_text_from_pdf(file_bytes: bytes, use_ocr: bool = True, api_key: str = None) -> str:
     """优先从缓存获取PDF解析结果"""
     cached = cache.get(file_bytes)
     if cached and 'pdf_text' in cached:
         return cached['pdf_text']
     
-    result = extract_text_from_pdf_cached(file_bytes, use_ocr, api_key, force_ocr)
+    result = extract_text_from_pdf_cached(file_bytes, use_ocr, api_key)
     cache.set(file_bytes, {'pdf_text': result})
     return result
 
@@ -629,7 +625,7 @@ def deduplicate_text(text: str) -> str:
 # 终极融合版：DOCX/DOC 解析
 # 结合了 OLE2底层穿透 与 原有的降级回退机制
 # ==========================================
-def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool = False, api_key: str = None) -> str:
+def extract_text_from_docx(file_bytes: bytes, file_name: str = "", use_ocr: bool = True, api_key: str = None) -> str:
     """终极增强版 DOCX/DOC 解析：多路并发降级机制处理"""
     text = ""
     
@@ -941,7 +937,7 @@ class ParseResult:
     file_size: int = 0
     parse_time: float = 0.0
 
-def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> ParseResult:
+def parse_single_file(item: Dict, use_ocr: bool = True, api_key: str = None) -> ParseResult:
     """解析单个文件"""
     start_time = time.time()
     
@@ -960,7 +956,7 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None, fo
         error_msg = None
         
         if file_name.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(content_bytes, use_ocr, api_key, force_ocr)
+            text = extract_text_from_pdf(content_bytes, use_ocr, api_key)
         elif file_name.lower().endswith(('.docx', '.doc')):
             text = extract_text_from_docx(content_bytes, file_name, use_ocr, api_key)
             # 如果docx文本太短且启用了OCR，尝试提取嵌入图片OCR（作为补充）
@@ -993,7 +989,7 @@ def parse_single_file(item: Dict, use_ocr: bool = False, api_key: str = None, fo
             parse_time=time.time() - start_time
         )
 
-def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = False, api_key: str = None, force_ocr: bool = False) -> Tuple[List[ParseResult], List[Dict]]:
+def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_ocr: bool = True, api_key: str = None) -> Tuple[List[ParseResult], List[Dict]]:
     """批量文件解析，使用线程池并发处理"""
     parsed_data = []
     failed_files = []
@@ -1003,7 +999,7 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {
-            executor.submit(parse_single_file, item, use_ocr, api_key, force_ocr): item 
+            executor.submit(parse_single_file, item, use_ocr, api_key): item 
             for item in uploaded_items
         }
         
@@ -1044,7 +1040,8 @@ def parse_files_batch(uploaded_items: List[Dict], progress_callback=None, use_oc
 async def call_deepseek_api_async(
     session: aiohttp.ClientSession, 
     text: str, 
-    api_key: str
+    api_key: str,
+    filename: str = ""
 ) -> Dict:
     """异步调用DeepSeek API - 单次调用，不带信号量（由调用方控制）"""
     url = "https://api.siliconflow.cn/v1/chat/completions"
@@ -1064,10 +1061,19 @@ async def call_deepseek_api_async(
     current_year = datetime.now().year
     current_date = datetime.now().strftime("%Y年%m月%d日")
     
+    # 文件名提示
+    filename_hint = f"\n【文件名参考】简历文件名：{filename}\n文件名通常包含姓名和学科信息，如'高中数学-张三.pdf'表示姓名为张三，学科为数学。如果简历文本中无法找到姓名或学科，请从文件名中提取。" if filename else ""
+    
     system_prompt = f"""你是一个专业的HR简历分析助手。请从简历文本中提取结构化信息。
-{city_context}
+{city_context}{filename_hint}
 
 【重要提示】今天是{current_date}，当前年份是{current_year}年。计算年龄时必须使用当前年份{current_year}减去出生年份。例如：2005年出生的人，年龄应该是{current_year - 2005}岁。
+
+【年龄估算规则】如果简历中没有直接写出年龄或出生年份，请根据以下信息估算：
+- 本科毕业年份：正常人18岁上大学，22岁本科毕业。例如2023年本科毕业，则年龄约为{current_year - (2023 - 22)}岁
+- 硕士毕业年份：正常人22岁本科毕业，25岁硕士毕业
+- 工作经验：如"3年工作经验"，假设开始工作年龄为22岁，则当前年龄约为22+3=25岁
+- 教育背景中的入学年份也可用于推算
 
 【重要】学校层次字段（tier）只能从以下选项中选择：
 - C9（九校联盟）
@@ -1086,7 +1092,7 @@ async def call_deepseek_api_async(
     "basic_info": {{
         "name": "姓名",
         "gender": "性别(男/女)",
-        "age": "年龄(数字，根据当前年份{current_year}计算)",
+        "age": "年龄(数字，根据当前年份{current_year}计算或估算)",
         "subject": "任教学科",
         "marital_status": "婚育状况(已婚已育/已婚未育/未婚/未提及)",
         "residence": "现居住城市",
@@ -1178,7 +1184,7 @@ async def process_batch_async_fast(parsed_results: List[ParseResult], api_key: s
             start_time = time.time()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    api_result = await call_deepseek_api_async(session, parse_result.content, api_key)
+                    api_result = await call_deepseek_api_async(session, parse_result.content, api_key, parse_result.filename)
                 
                 results[idx] = {
                     'filename': parse_result.filename,
@@ -1398,6 +1404,36 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
         
         total_score, score_logs = calculate_score(api_data)
         
+        # 从文件名提取姓名和学科的备用逻辑
+        def extract_from_filename(fname: str) -> tuple:
+            """从文件名提取学科和姓名，如'高中数学-张三.pdf' -> (数学, 张三)"""
+            import re
+            # 移除扩展名
+            name_part = re.sub(r'\.(pdf|docx|doc)$', '', fname, flags=re.IGNORECASE)
+            # 尝试匹配常见格式：学科-姓名、姓名-学科、高中学科-姓名等
+            # 格式1: 高中数学-张三、数学-张三
+            match = re.search(r'(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})[-_\s]+([\u4e00-\u9fa5]{2,4})', name_part)
+            if match:
+                subject, name = match.groups()
+                return name, subject
+            # 格式2: 张三-高中数学、张三-数学
+            match = re.search(r'([\u4e00-\u9fa5]{2,4})[-_\s]+(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})', name_part)
+            if match:
+                name, subject = match.groups()
+                return name, subject
+            # 格式3: 只包含一个中文字符串，可能是姓名
+            match = re.search(r'([\u4e00-\u9fa5]{2,4})', name_part)
+            if match:
+                return match.group(1), ""
+            return "", ""
+        
+        # 如果API返回的姓名或学科为空，尝试从文件名提取
+        name_from_file, subject_from_file = extract_from_filename(filename)
+        if not basic.get('name') and name_from_file:
+            basic['name'] = name_from_file
+        if not basic.get('subject') and subject_from_file:
+            basic['subject'] = subject_from_file
+        
         # 检查是否需要人工复核
         needs_review = False
         review_fields = []
@@ -1494,15 +1530,12 @@ def main():
             accept_multiple_files=True
         )
     with col2:
-        # OCR选项
-        use_ocr = st.checkbox("启用OCR（识别图片型PDF/DOCX）", value=False)
+        # OCR选项（默认启用）
+        use_ocr = st.checkbox("启用OCR（识别图片型PDF/DOCX）", value=True)
         if use_ocr:
-            st.success(f"✅ DeepSeek OCR已就绪")
+            st.success(f"✅ DeepSeek OCR已启用")
             if TESSERACT_SUPPORT:
                 st.caption("📎 本地Tesseract作为备用")
-        
-        # 强化读取模式
-        force_ocr = st.checkbox("🔥 强化读取模式", value=False, help="开启后所有PDF强制走OCR，适用于文字层缺失或部分信息无法识别的PDF")
         
         # Debug模式
         debug_mode = st.checkbox("🐛 Debug Mode", value=False, help="开启后在导出的Excel中附带原始解析文本和API请求/响应记录")
@@ -1590,7 +1623,7 @@ def main():
         items_to_process = st.session_state.uploaded_files_queue.copy()
         st.session_state.uploaded_files_queue = []
         
-        results = process_all_files(items_to_process, api_key, use_ocr, debug_mode, force_ocr)
+        results = process_all_files(items_to_process, api_key, use_ocr, debug_mode)
         
         if results['final_results']:
             st.session_state.final_results = results['final_results']
@@ -1678,7 +1711,7 @@ def main():
 # ============================
 # 处理逻辑
 # ============================
-def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False, force_ocr=False):
+def process_all_files(uploaded_items, api_key, use_ocr=True, debug_mode=False):
     """处理所有文件的完整流程 - 极速版"""
     total_files = len(uploaded_items)
     results = {
@@ -1707,8 +1740,7 @@ def process_all_files(uploaded_items, api_key, use_ocr=False, debug_mode=False, 
                 uploaded_items, 
                 update_parse_progress,
                 use_ocr,
-                api_key,  # 传递api_key用于DeepSeek OCR
-                force_ocr
+                api_key  # 传递api_key用于DeepSeek OCR
             )
             results['parse_time'] = time.time() - start_time
             results['parsed_results'] = parsed_results
