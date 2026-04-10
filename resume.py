@@ -1091,6 +1091,7 @@ async def call_deepseek_api_async(
 {{
     "basic_info": {{
         "name": "姓名",
+        "phone": "手机号(11位数字，如13812345678。从简历正文或文件名中提取)",
         "gender": "性别(男/女)",
         "age": "年龄(数字，根据当前年份{current_year}计算或估算)",
         "subject": "任教学科",
@@ -1404,35 +1405,58 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
         
         total_score, score_logs = calculate_score(api_data)
         
-        # 从文件名提取姓名和学科的备用逻辑
+        # 从文件名提取姓名、学科和手机号的备用逻辑
         def extract_from_filename(fname: str) -> tuple:
-            """从文件名提取学科和姓名，如'高中数学-张三.pdf' -> (数学, 张三)"""
+            """从文件名提取学科、姓名和手机号，如'高中数学-张三-13812345678.pdf' -> (张三, 数学, 13812345678)"""
             import re
             # 移除扩展名
             name_part = re.sub(r'\.(pdf|docx|doc)$', '', fname, flags=re.IGNORECASE)
+            
+            # 提取手机号（11位数字，1开头）
+            phone_match = re.search(r'(1[3-9]\d{9})', name_part)
+            phone = phone_match.group(1) if phone_match else ""
+            
+            # 移除手机号后再提取姓名和学科
+            name_part_no_phone = re.sub(r'1[3-9]\d{9}', '', name_part)
+            
             # 尝试匹配常见格式：学科-姓名、姓名-学科、高中学科-姓名等
             # 格式1: 高中数学-张三、数学-张三
-            match = re.search(r'(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})[-_\s]+([\u4e00-\u9fa5]{2,4})', name_part)
+            match = re.search(r'(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})[-_\s]+([\u4e00-\u9fa5]{2,4})', name_part_no_phone)
             if match:
                 subject, name = match.groups()
-                return name, subject
+                return name, subject, phone
             # 格式2: 张三-高中数学、张三-数学
-            match = re.search(r'([\u4e00-\u9fa5]{2,4})[-_\s]+(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})', name_part)
+            match = re.search(r'([\u4e00-\u9fa5]{2,4})[-_\s]+(?:高中|初中|小学)?([\u4e00-\u9fa5]{2,})', name_part_no_phone)
             if match:
                 name, subject = match.groups()
-                return name, subject
+                return name, subject, phone
             # 格式3: 只包含一个中文字符串，可能是姓名
-            match = re.search(r'([\u4e00-\u9fa5]{2,4})', name_part)
+            match = re.search(r'([\u4e00-\u9fa5]{2,4})', name_part_no_phone)
             if match:
-                return match.group(1), ""
-            return "", ""
+                return match.group(1), "", phone
+            return "", "", phone
         
-        # 如果API返回的姓名或学科为空，尝试从文件名提取
-        name_from_file, subject_from_file = extract_from_filename(filename)
+        # 从文件内容中提取手机号
+        def extract_phone_from_content(content: str) -> str:
+            """从文件内容中提取手机号"""
+            import re
+            if not content:
+                return ""
+            # 匹配手机号：1开头，第二位3-9，后面9位数字
+            phone_match = re.search(r'(1[3-9]\d{9})', content)
+            return phone_match.group(1) if phone_match else ""
+        
+        # 如果API返回的姓名、学科或手机号为空，尝试从文件名或内容提取
+        name_from_file, subject_from_file, phone_from_file = extract_from_filename(filename)
+        phone_from_content = extract_phone_from_content(result.get('full_content', ''))
+        
         if not basic.get('name') and name_from_file:
             basic['name'] = name_from_file
         if not basic.get('subject') and subject_from_file:
             basic['subject'] = subject_from_file
+        if not basic.get('phone'):
+            # 优先使用文件名中的手机号，其次使用内容中提取的
+            basic['phone'] = phone_from_file or phone_from_content
         
         # 检查是否需要人工复核
         needs_review = False
@@ -1449,6 +1473,7 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
             '处理状态': '需复核' if needs_review else '成功',
             # 基本信息
             '姓名': basic.get('name', ''),
+            '手机号': basic.get('phone', ''),
             '性别': basic.get('gender', ''),
             '年龄': basic.get('age', ''),
             '任教学科': basic.get('subject', ''),
@@ -1503,8 +1528,8 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
 # 主界面
 # ============================
 def main():
-    st.title("🎓 智能简历筛选系统 v4.0")
-    st.caption("📊 7大维度评分 | ⚡ 极速异步处理 | 🚀 真100并发 | 🔧 OLE2底层穿透解析")
+    st.title("🎓 智能简历筛选系统 0410")
+    st.caption("")
     
     # 初始化
     for key in ['uploaded_files_queue', 'processing', 'final_results', 'failed_files', 'need_review']:
@@ -1615,7 +1640,7 @@ def main():
         start_btn = st.button("🚀 开始批量解析", type="primary", disabled=True)
     else:
         file_count = len(st.session_state.uploaded_files_queue)
-        st.info(f"✅ 就绪：{file_count} 个文件待处理 | 预计时间：{max(5, file_count * 2)}-{max(10, file_count * 4)}秒")
+        st.info(f"✅ 就绪：{file_count} 个文件待处理")
         start_btn = st.button("🚀 开始批量解析", type="primary")
     
     # 处理逻辑
@@ -1681,7 +1706,7 @@ def main():
         st.subheader("📋 候选人列表")
         
         display_cols = [
-            '文件名', '处理状态', '姓名', '性别', '年龄', '任教学科',
+            '文件名', '处理状态', '姓名', '手机号', '性别', '年龄', '任教学科',
             '本科学校', '本科层次', '硕士学校', '硕士层次',
             '现工作单位', '单位档次', '教龄', '班主任年限', '管理职务',
             '荣誉称号', '教学竞赛',
