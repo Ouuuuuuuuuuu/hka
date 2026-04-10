@@ -76,7 +76,7 @@ except ImportError:
 # 配置区
 # ============================
 st.set_page_config(
-    page_title="智能简历筛选系统 v4.0", 
+    page_title="智能简历筛选系统 0410", 
     layout="wide", 
     page_icon="📄",
     initial_sidebar_state="collapsed"
@@ -1216,11 +1216,11 @@ async def process_batch_async_fast(parsed_results: List[ParseResult], api_key: s
 
 
 # ============================
-# 评分算法 - v3.20 合并版（不再区分敏感字段）
+# 评分算法 - 0410 合并版（不再区分敏感字段）
 # ============================
 def calculate_score(data: Dict) -> Tuple[int, str]:
     """
-    简历评分算法 - v3.20合并版
+    简历评分算法 - 0410合并版
     不再区分公开/敏感，统一评分标准
     返回: (总分, 评分详情)
     """
@@ -1376,7 +1376,7 @@ def calculate_score(data: Dict) -> Tuple[int, str]:
 # 结果处理
 # ============================
 def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[List[Dict], List[Dict]]:
-    """处理API结果，生成最终表格 - v3.20合并版"""
+    """处理API结果，生成最终表格 - 0410合并版"""
     final_results = []
     need_review = []
     
@@ -1467,7 +1467,7 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
                 needs_review = True
                 review_fields.append(field_name)
         
-        # v3.20 完整字段（删除敏感字样）
+        # 0410 完整字段（删除敏感字样）
         row = {
             '文件名': filename,
             '处理状态': '需复核' if needs_review else '成功',
@@ -1690,7 +1690,7 @@ def main():
             st.metric("平均/最高评分", f"{avg_score:.1f} / {max_score}")
         
         # 评分维度说明
-        with st.expander("📋 评分标准说明 (v4.0 - 合并版)"):
+        with st.expander("📋 评分标准说明 (0410 - 合并版)"):
             st.markdown("""
             **评分维度（最大约47分）：**
             - 专业匹配：省级教学竞赛一等奖 +5
