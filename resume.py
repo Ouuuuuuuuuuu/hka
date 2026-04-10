@@ -1094,7 +1094,7 @@ async def call_deepseek_api_async(
         "phone": "手机号(11位数字，如13812345678。从简历正文或文件名中提取)",
         "gender": "性别(男/女)",
         "age": "年龄(数字，根据当前年份{current_year}计算或估算)",
-        "subject": "任教学科",
+        "subject": "任教学科(只填学科名称，如数学、语文、英语，不要带高中/初中/小学等前缀)",
         "marital_status": "婚育状况(已婚已育/已婚未育/未婚/未提及)",
         "residence": "现居住城市",
         "partner_location": "配偶/伴侣工作地城市",
@@ -1446,6 +1446,12 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
             phone_match = re.search(r'(1[3-9]\d{9})', content)
             return phone_match.group(1) if phone_match else ""
         
+        # 统一学科名称格式：去除"高中"、"初中"、"小学"等前缀
+        subject = basic.get('subject', '')
+        if subject:
+            subject = re.sub(r'^(高中|初中|小学)', '', subject).strip()
+            basic['subject'] = subject
+        
         # 如果API返回的姓名、学科或手机号为空，尝试从文件名或内容提取
         name_from_file, subject_from_file, phone_from_file = extract_from_filename(filename)
         phone_from_content = extract_phone_from_content(result.get('full_content', ''))
@@ -1453,7 +1459,8 @@ def process_results(api_results: List[Dict], debug_mode: bool = False) -> Tuple[
         if not basic.get('name') and name_from_file:
             basic['name'] = name_from_file
         if not basic.get('subject') and subject_from_file:
-            basic['subject'] = subject_from_file
+            # 文件名提取的学科也需要去除前缀
+            basic['subject'] = re.sub(r'^(高中|初中|小学)', '', subject_from_file).strip()
         if not basic.get('phone'):
             # 优先使用文件名中的手机号，其次使用内容中提取的
             basic['phone'] = phone_from_file or phone_from_content
